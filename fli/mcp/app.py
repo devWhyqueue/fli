@@ -39,7 +39,7 @@ class FlightSearchConfig(BaseSettings):
         description="Default number of adult passengers to include in searches.",
     )
     default_currency: str = Field(
-        "USD",
+        "EUR",
         min_length=3,
         max_length=3,
         description="Three-letter currency code returned with search results.",
