@@ -127,3 +127,13 @@ class TestSerializeFlightResult:
         flight = _make_flight(price=500.0)
         result = _serialize_flight_result(flight, is_round_trip=True)
         assert result["price"] == 500.0
+
+    def test_multicity_segment_prices_are_serialized(self):
+        """Multi-city results should expose per-segment prices when present."""
+        flight = _make_flight(price=500.0)
+        flight.segment_prices = [120.0, 180.0, 200.0]
+
+        result = _serialize_flight_result(flight, is_round_trip=False)
+
+        assert result["price"] == 500.0
+        assert result["segment_prices"] == [120.0, 180.0, 200.0]

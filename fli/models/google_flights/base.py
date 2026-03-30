@@ -139,6 +139,7 @@ class FlightResult(BaseModel):
     price: NonNegativeFloat  # in specified currency
     duration: PositiveInt  # total duration in minutes
     stops: NonNegativeInt
+    segment_prices: list[NonNegativeFloat] | None = None
 
 
 class FlightSegment(BaseModel):

@@ -305,6 +305,94 @@ def test_multicity_search_returns_direct_results_without_round_trip_chaining(mon
     assert not isinstance(results[0], tuple)
 
 
+def test_multicity_search_combines_segment_results_into_full_itineraries(monkeypatch):
+    """Test multi-city searches return full itineraries across all requested segments."""
+    search = SearchFlights()
+    base_time = datetime.now() + timedelta(days=30)
+    filters = FlightSearchFilters(
+        trip_type=TripType.MULTI_CITY,
+        passenger_info=PassengerInfo(adults=1),
+        flight_segments=[
+            FlightSegment(
+                departure_airport=[[Airport.JFK, 0]],
+                arrival_airport=[[Airport.LAX, 0]],
+                travel_date=(base_time).strftime("%Y-%m-%d"),
+            ),
+            FlightSegment(
+                departure_airport=[[Airport.LAX, 0]],
+                arrival_airport=[[Airport.SFO, 0]],
+                travel_date=(base_time + timedelta(days=3)).strftime("%Y-%m-%d"),
+            ),
+            FlightSegment(
+                departure_airport=[[Airport.SFO, 0]],
+                arrival_airport=[[Airport.JFK, 0]],
+                travel_date=(base_time + timedelta(days=6)).strftime("%Y-%m-%d"),
+            ),
+        ],
+        stops=MaxStops.ANY,
+        seat_type=SeatType.ECONOMY,
+        sort_by=SortBy.CHEAPEST,
+    )
+
+    def make_result(
+        departure_airport: Airport,
+        arrival_airport: Airport,
+        departure_time: datetime,
+        price: float,
+    ) -> FlightResult:
+        return FlightResult(
+            price=price,
+            duration=180,
+            stops=0,
+            legs=[
+                FlightLeg(
+                    airline=Airline.AA,
+                    flight_number="AA100",
+                    departure_airport=departure_airport,
+                    arrival_airport=arrival_airport,
+                    departure_datetime=departure_time,
+                    arrival_datetime=departure_time + timedelta(hours=3),
+                    duration=180,
+                )
+            ],
+        )
+
+    segment_payloads = [
+        [make_result(Airport.JFK, Airport.LAX, base_time, 100.0)],
+        [make_result(Airport.LAX, Airport.SFO, base_time + timedelta(days=3), 120.0)],
+        [make_result(Airport.SFO, Airport.JFK, base_time + timedelta(days=6), 140.0)],
+    ]
+
+    def fake_search_one_way(single_segment_filters):
+        segment = single_segment_filters.flight_segments[0]
+        route = (
+            segment.departure_airport[0][0],
+            segment.arrival_airport[0][0],
+        )
+        if route == (Airport.JFK, Airport.LAX):
+            return segment_payloads[0]
+        if route == (Airport.LAX, Airport.SFO):
+            return segment_payloads[1]
+        if route == (Airport.SFO, Airport.JFK):
+            return segment_payloads[2]
+        raise AssertionError(f"Unexpected route: {route}")
+
+    monkeypatch.setattr(search, "_search_one_way", fake_search_one_way)
+
+    results = search.search(filters)
+
+    assert isinstance(results, list)
+    assert len(results) == 1
+    itinerary = results[0]
+    assert itinerary.price == 360.0
+    assert itinerary.duration == 540
+    assert len(itinerary.legs) == 3
+    assert itinerary.segment_prices == [100.0, 120.0, 140.0]
+    assert itinerary.legs[0].departure_airport == Airport.JFK
+    assert itinerary.legs[1].departure_airport == Airport.LAX
+    assert itinerary.legs[2].departure_airport == Airport.SFO
+
+
 @pytest.mark.parametrize(
     "search_params_fixture",
     [

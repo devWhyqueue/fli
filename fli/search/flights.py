@@ -5,6 +5,7 @@ with Google Flights' API to find available flights and their details.
 """
 
 import json
+from itertools import product
 from copy import deepcopy
 from datetime import datetime
 
@@ -14,6 +15,7 @@ from fli.models import (
     FlightLeg,
     FlightResult,
     FlightSearchFilters,
+    SortBy,
 )
 from fli.models.google_flights.base import TripType
 from fli.search.client import get_client
@@ -51,29 +53,11 @@ class SearchFlights:
             Exception: If the search fails or returns invalid data
 
         """
-        encoded_filters = filters.encode()
-
         try:
-            response = self.client.post(
-                url=self.BASE_URL,
-                data=f"f.req={encoded_filters}",
-                impersonate="chrome",
-                allow_redirects=True,
-            )
-            response.raise_for_status()
+            if filters.trip_type == TripType.MULTI_CITY:
+                return self._search_multi_city(filters, top_n=top_n)
 
-            parsed = json.loads(response.text.lstrip(")]}'"))[0][2]
-            if not parsed:
-                return None
-
-            encoded_filters = json.loads(parsed)
-            flights_data = [
-                item
-                for i in [2, 3]
-                if isinstance(encoded_filters[i], list)
-                for item in encoded_filters[i][0]
-            ]
-            flights = [self._parse_flights_data(flight) for flight in flights_data]
+            flights = self._search_one_way(filters)
 
             if (
                 filters.trip_type != TripType.ROUND_TRIP
@@ -97,6 +81,76 @@ class SearchFlights:
 
         except Exception as e:
             raise Exception(f"Search failed: {str(e)}") from e
+
+    def _search_one_way(self, filters: FlightSearchFilters) -> list[FlightResult] | None:
+        """Execute a single shopping request and parse the returned itineraries."""
+        encoded_filters = filters.encode()
+        response = self.client.post(
+            url=self.BASE_URL,
+            data=f"f.req={encoded_filters}",
+            impersonate="chrome",
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+
+        parsed = json.loads(response.text.lstrip(")]}'"))[0][2]
+        if not parsed:
+            return None
+
+        encoded_filters = json.loads(parsed)
+        flights_data = [
+            item
+            for i in [2, 3]
+            if isinstance(encoded_filters[i], list)
+            for item in encoded_filters[i][0]
+        ]
+        return [self._parse_flights_data(flight) for flight in flights_data]
+
+    def _search_multi_city(
+        self, filters: FlightSearchFilters, top_n: int = 5
+    ) -> list[FlightResult] | None:
+        """Search each segment independently and combine results into full itineraries."""
+        segment_results: list[list[FlightResult]] = []
+        for segment in filters.flight_segments:
+            segment_filters = deepcopy(filters)
+            segment_filters.trip_type = TripType.ONE_WAY
+            segment_filters.flight_segments = [segment]
+            results = self._search_one_way(segment_filters)
+            if not results:
+                return None
+            segment_results.append(results[:top_n])
+
+        combined_results = [
+            self._combine_segment_results(result_group)
+            for result_group in product(*segment_results)
+        ]
+        self._sort_combined_results(combined_results, filters)
+        return combined_results[:top_n]
+
+    @staticmethod
+    def _combine_segment_results(results: tuple[FlightResult, ...]) -> FlightResult:
+        """Combine segment-level results into a single itinerary."""
+        return FlightResult(
+            legs=[leg for result in results for leg in result.legs],
+            price=sum(result.price for result in results),
+            duration=sum(result.duration for result in results),
+            stops=sum(result.stops for result in results),
+            segment_prices=[result.price for result in results],
+        )
+
+    @staticmethod
+    def _sort_combined_results(results: list[FlightResult], filters: FlightSearchFilters) -> None:
+        """Sort combined multi-city itineraries using the requested ordering."""
+        if filters.sort_by == SortBy.DURATION:
+            results.sort(key=lambda item: item.duration)
+            return
+        if filters.sort_by == SortBy.DEPARTURE_TIME:
+            results.sort(key=lambda item: item.legs[0].departure_datetime)
+            return
+        if filters.sort_by == SortBy.ARRIVAL_TIME:
+            results.sort(key=lambda item: item.legs[-1].arrival_datetime)
+            return
+        results.sort(key=lambda item: item.price)
 
     @staticmethod
     def _parse_flights_data(data: list) -> FlightResult:

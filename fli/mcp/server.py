@@ -487,11 +487,14 @@ def _serialize_flight_result(flight: Any, is_round_trip: bool = False) -> dict[s
             ],
         }
     else:
-        return {
+        payload = {
             "price": flight.price,
             "currency": CONFIG.default_currency,
             "legs": [_serialize_flight_leg(leg) for leg in flight.legs],
         }
+        if getattr(flight, "segment_prices", None) is not None:
+            payload["segment_prices"] = flight.segment_prices
+        return payload
 
 
 def _execute_flight_search(params: FlightSearchParams) -> dict[str, Any]:
