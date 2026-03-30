@@ -1,12 +1,16 @@
 """Tests for Search class."""
 
+import json
 from datetime import datetime, timedelta
 
 import pytest
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from fli.models import (
+    Airline,
     Airport,
+    FlightLeg,
+    FlightResult,
     FlightSearchFilters,
     FlightSegment,
     MaxStops,
@@ -232,6 +236,73 @@ def test_round_trip_with_selected_outbound(search, round_trip_search_params):
     for return_flight in return_results:
         assert return_flight.legs[0].departure_airport == Airport.JFK
         assert return_flight.legs[-1].arrival_airport == Airport.SFO
+
+
+def test_multicity_search_returns_direct_results_without_round_trip_chaining(monkeypatch):
+    """Test multi-city searches do not recurse into round-trip pairing."""
+    future_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+    search = SearchFlights()
+    filters = FlightSearchFilters(
+        trip_type=TripType.MULTI_CITY,
+        passenger_info=PassengerInfo(adults=1),
+        flight_segments=[
+            FlightSegment(
+                departure_airport=[[Airport.JFK, 0]],
+                arrival_airport=[[Airport.LAX, 0]],
+                travel_date=future_date,
+            ),
+            FlightSegment(
+                departure_airport=[[Airport.LAX, 0]],
+                arrival_airport=[[Airport.SFO, 0]],
+                travel_date=(datetime.now() + timedelta(days=33)).strftime("%Y-%m-%d"),
+            ),
+            FlightSegment(
+                departure_airport=[[Airport.SFO, 0]],
+                arrival_airport=[[Airport.JFK, 0]],
+                travel_date=(datetime.now() + timedelta(days=36)).strftime("%Y-%m-%d"),
+            ),
+        ],
+        stops=MaxStops.ANY,
+        seat_type=SeatType.ECONOMY,
+        sort_by=SortBy.CHEAPEST,
+    )
+
+    class FakeResponse:
+        text = ")]}'" + json.dumps([[None, None, json.dumps([None, None, [[["flight"]]], None])]])
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    monkeypatch.setattr(search.client, "post", lambda **kwargs: FakeResponse())
+    monkeypatch.setattr(
+        SearchFlights,
+        "_parse_flights_data",
+        staticmethod(
+            lambda data: FlightResult(
+                price=123.0,
+                duration=180,
+                stops=0,
+                legs=[
+                    FlightLeg(
+                        airline=Airline.AA,
+                        flight_number="AA100",
+                        departure_airport=Airport.JFK,
+                        arrival_airport=Airport.SFO,
+                        departure_datetime=datetime.now() + timedelta(days=30),
+                        arrival_datetime=datetime.now() + timedelta(days=30, hours=5),
+                        duration=300,
+                    )
+                ],
+            )
+        ),
+    )
+
+    results = search.search(filters)
+
+    assert isinstance(results, list)
+    assert len(results) == 1
+    assert not isinstance(results[0], tuple)
 
 
 @pytest.mark.parametrize(

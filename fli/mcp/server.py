@@ -10,7 +10,7 @@ import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
@@ -29,8 +29,6 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from fli.core import (
-    build_date_search_segments,
-    build_flight_segments,
     build_time_restrictions,
     parse_airlines,
     parse_cabin_class,
@@ -40,12 +38,12 @@ from fli.core import (
 )
 from fli.core.parsers import ParseError
 from fli.models import (
-    DateSearchFilters,
     FlightSearchFilters,
+    FlightSegment,
     PassengerInfo,
     TripType,
 )
-from fli.search import SearchDates, SearchFlights
+from fli.search import SearchFlights
 
 
 class FlightSearchConfig(BaseSettings):
@@ -144,6 +142,7 @@ class FliMCP(FastMCP):
             )
 
         def decorator(func: Callable) -> Callable:
+            """Register the wrapped function as an MCP tool."""
             self.add_tool(func, name=name, description=description, annotations=annotations)
             return func
 
@@ -213,11 +212,10 @@ mcp = FliMCP("Flight Search MCP Server")
 class FlightSearchParams(BaseModel):
     """Parameters for searching flights on a specific date."""
 
-    origin: str = Field(description="Departure airport IATA code (e.g., 'JFK', 'LAX')")
-    destination: str = Field(description="Arrival airport IATA code (e.g., 'LHR', 'NRT')")
-    departure_date: str = Field(description="Outbound travel date in YYYY-MM-DD format")
-    return_date: str | None = Field(
-        None, description="Return date in YYYY-MM-DD format (omit for one-way)"
+    segments: list["FlightSearchSegmentParams"] = Field(
+        description="Ordered itinerary segments with explicit IATA airports and dates",
+        min_length=1,
+        max_length=6,
     )
     departure_window: str | None = Field(
         None,
@@ -257,18 +255,46 @@ class FlightSearchParams(BaseModel):
         None, ge=1, description="Maximum total itinerary duration in minutes"
     )
 
+    def model_post_init(self, _context: object) -> None:
+        """Validate exact-date segment ordering."""
+        _validate_segment_count(len(self.segments))
+        travel_dates = [
+            datetime.strptime(segment.date, "%Y-%m-%d").date() for segment in self.segments
+        ]
+        if travel_dates != sorted(travel_dates):
+            raise ValueError("Flight-search segment dates must be non-decreasing")
+
+
+class FlightSearchSegmentParams(BaseModel):
+    """A single exact-date itinerary segment."""
+
+    origin: str = Field(description="Departure airport IATA code (e.g., 'JFK')")
+    destination: str = Field(description="Arrival airport IATA code (e.g., 'LHR')")
+    date: str = Field(description="Travel date in YYYY-MM-DD format")
+
+
+class DateSearchSegmentParams(BaseModel):
+    """A segment template for flexible date scans."""
+
+    origin: str = Field(description="Departure airport IATA code (e.g., 'JFK')")
+    destination: str = Field(description="Arrival airport IATA code (e.g., 'LHR')")
+    day_offset: int | None = Field(
+        None,
+        ge=0,
+        description="Days after the first segment's departure date; omit or use 0 for segment 1",
+    )
+
 
 class DateSearchParams(BaseModel):
     """Parameters for finding the cheapest travel dates within a range."""
 
-    origin: str = Field(description="Departure airport IATA code (e.g., 'JFK', 'LAX')")
-    destination: str = Field(description="Arrival airport IATA code (e.g., 'LHR', 'NRT')")
+    segments: list[DateSearchSegmentParams] = Field(
+        description="Ordered itinerary segments; segment 1 uses the scanned date and later segments use day_offset",
+        min_length=1,
+        max_length=6,
+    )
     start_date: str = Field(description="Start of date range in YYYY-MM-DD format")
     end_date: str = Field(description="End of date range in YYYY-MM-DD format")
-    trip_duration: int = Field(
-        3, ge=1, description="Trip duration in days (for round-trip searches)"
-    )
-    is_round_trip: bool = Field(False, description="Search for round-trip flights")
     airlines: list[str] | None = Field(
         None, description="Filter by airline IATA codes (e.g., ['BA', 'AA'])"
     )
@@ -282,12 +308,151 @@ class DateSearchParams(BaseModel):
     departure_window: str | None = Field(
         None, description="Preferred departure time window in 'HH-HH' 24h format (e.g., '6-20')"
     )
+    arrival_time_window: str | None = Field(
+        None, description="Preferred arrival time window in 'HH-HH' 24h format (e.g., '8-22')"
+    )
     sort_by_price: bool = Field(False, description="Sort results by price (lowest first)")
     passengers: int = Field(
         CONFIG.default_passengers,
         ge=1,
         description="Number of adult passengers",
     )
+
+    def model_post_init(self, _context: object) -> None:
+        """Validate the segment template shape."""
+        _validate_segment_count(len(self.segments))
+        first_offset = self.segments[0].day_offset
+        if first_offset not in (None, 0):
+            raise ValueError("First date-search segment cannot define a non-zero day_offset")
+
+        offsets = [0]
+        for index, segment in enumerate(self.segments[1:], start=1):
+            if segment.day_offset is None:
+                raise ValueError(f"Segment {index + 1} must define day_offset")
+            offsets.append(segment.day_offset)
+
+        if offsets != sorted(offsets):
+            raise ValueError("Date-search segment day_offset values must be non-decreasing")
+
+
+def _validate_segment_count(segment_count: int) -> None:
+    """Validate supported itinerary lengths."""
+    if segment_count < 1:
+        raise ValueError("At least one segment is required")
+    if segment_count > 6:
+        raise ValueError("No more than 6 segments are supported")
+
+
+def _determine_trip_type(
+    segments: list[FlightSearchSegmentParams | DateSearchSegmentParams],
+) -> TripType:
+    """Infer the itinerary type from ordered segments."""
+    _validate_segment_count(len(segments))
+    if len(segments) == 1:
+        return TripType.ONE_WAY
+
+    if len(segments) == 2:
+        first, second = segments
+        if first.origin == second.destination and first.destination == second.origin:
+            return TripType.ROUND_TRIP
+
+    return TripType.MULTI_CITY
+
+
+def _build_flight_segments_from_params(
+    segments: list[FlightSearchSegmentParams],
+    time_restrictions: Any,
+) -> tuple[list[FlightSegment], TripType]:
+    """Resolve exact-date segment params into flight segments."""
+    trip_type = _determine_trip_type(segments)
+    resolved_segments = []
+    for segment in segments:
+        resolved_segments.append(
+            FlightSegment(
+                departure_airport=[[resolve_airport(segment.origin), 0]],
+                arrival_airport=[[resolve_airport(segment.destination), 0]],
+                travel_date=segment.date,
+                time_restrictions=time_restrictions,
+            )
+        )
+    return resolved_segments, trip_type
+
+
+def _build_flight_filters(params: FlightSearchParams) -> tuple[FlightSearchFilters, TripType]:
+    """Build the exact-date flight-search filters from MCP params."""
+    cabin_class = parse_cabin_class(params.cabin_class)
+    max_stops = parse_max_stops(params.max_stops)
+    sort_by = parse_sort_by(params.sort_by)
+    airlines = parse_airlines(params.airlines)
+    departure_window = (
+        params.departure_time_window or params.departure_window or CONFIG.default_departure_window
+    )
+    time_restrictions = build_time_restrictions(
+        departure_window=departure_window,
+        arrival_window=params.arrival_time_window,
+    )
+    segments, trip_type = _build_flight_segments_from_params(params.segments, time_restrictions)
+    filters = FlightSearchFilters(
+        trip_type=trip_type,
+        passenger_info=PassengerInfo(
+            adults=params.passengers,
+            num_cabin_luggage=params.num_cabin_luggage,
+        ),
+        flight_segments=segments,
+        stops=max_stops,
+        seat_type=cabin_class,
+        airlines=airlines,
+        max_duration=params.duration,
+        sort_by=sort_by,
+    )
+    return filters, trip_type
+
+
+def _materialize_date_search_segments(
+    segments: list[DateSearchSegmentParams],
+    anchor_date: date,
+) -> list[FlightSearchSegmentParams]:
+    """Convert a date-search segment template into an exact-date itinerary."""
+    exact_segments: list[FlightSearchSegmentParams] = []
+    for index, segment in enumerate(segments):
+        offset = 0 if index == 0 else segment.day_offset or 0
+        exact_segments.append(
+            FlightSearchSegmentParams(
+                origin=segment.origin,
+                destination=segment.destination,
+                date=(anchor_date + timedelta(days=offset)).isoformat(),
+            )
+        )
+    return exact_segments
+
+
+def _build_date_search_queries(params: DateSearchParams) -> list[tuple[int, FlightSearchParams]]:
+    """Materialize each date in the flexible window into an exact itinerary search."""
+    start_date = datetime.strptime(params.start_date, "%Y-%m-%d").date()
+    end_date = datetime.strptime(params.end_date, "%Y-%m-%d").date()
+    if end_date < start_date:
+        raise ValueError("end_date must be on or after start_date")
+
+    queries: list[tuple[int, FlightSearchParams]] = []
+    for index in range((end_date - start_date).days + 1):
+        anchor_date = start_date + timedelta(days=index)
+        queries.append(
+            (
+                index,
+                FlightSearchParams(
+                    segments=_materialize_date_search_segments(params.segments, anchor_date),
+                    departure_window=params.departure_window,
+                    departure_time_window=params.departure_window,
+                    arrival_time_window=params.arrival_time_window,
+                    airlines=params.airlines,
+                    cabin_class=params.cabin_class,
+                    max_stops=params.max_stops,
+                    sort_by="CHEAPEST",
+                    passengers=params.passengers,
+                ),
+            )
+        )
+    return queries
 
 
 # =============================================================================
@@ -329,66 +494,10 @@ def _serialize_flight_result(flight: Any, is_round_trip: bool = False) -> dict[s
         }
 
 
-def _serialize_date_result(date_result: Any) -> dict[str, Any]:
-    """Serialize a date price result to a dictionary."""
-    return {
-        "date": date_result.date,
-        "price": date_result.price,
-        "currency": CONFIG.default_currency,
-        "return_date": getattr(date_result, "return_date", None),
-    }
-
-
-# =============================================================================
-# Search Execution
-# =============================================================================
-
-
 def _execute_flight_search(params: FlightSearchParams) -> dict[str, Any]:
     """Execute a flight search and return formatted results."""
     try:
-        # Parse inputs using shared utilities
-        origin = resolve_airport(params.origin)
-        destination = resolve_airport(params.destination)
-        cabin_class = parse_cabin_class(params.cabin_class)
-        max_stops = parse_max_stops(params.max_stops)
-        sort_by = parse_sort_by(params.sort_by)
-        airlines = parse_airlines(params.airlines)
-
-        # Build time restrictions
-        departure_window = (
-            params.departure_time_window
-            or params.departure_window
-            or CONFIG.default_departure_window
-        )
-        time_restrictions = build_time_restrictions(
-            departure_window=departure_window,
-            arrival_window=params.arrival_time_window,
-        )
-
-        # Build flight segments
-        segments, trip_type = build_flight_segments(
-            origin=origin,
-            destination=destination,
-            departure_date=params.departure_date,
-            return_date=params.return_date,
-            time_restrictions=time_restrictions,
-        )
-
-        # Create search filters
-        filters = FlightSearchFilters(
-            trip_type=trip_type,
-            passenger_info=PassengerInfo(
-                adults=params.passengers,
-                num_cabin_luggage=params.num_cabin_luggage,
-            ),
-            flight_segments=segments,
-            stops=max_stops,
-            seat_type=cabin_class,
-            airlines=airlines,
-            max_duration=params.duration,
-            sort_by=sort_by,
-        )
+        filters, trip_type = _build_flight_filters(params)
 
         # Perform search
         search_client = SearchFlights()
@@ -423,45 +532,42 @@ def _execute_flight_search(params: FlightSearchParams) -> dict[str, Any]:
 def _execute_date_search(params: DateSearchParams) -> dict[str, Any]:
     """Execute a date search and return formatted results."""
     try:
-        # Parse inputs using shared utilities
-        origin = resolve_airport(params.origin)
-        destination = resolve_airport(params.destination)
-        cabin_class = parse_cabin_class(params.cabin_class)
-        max_stops = parse_max_stops(params.max_stops)
-        airlines = parse_airlines(params.airlines)
+        queries = _build_date_search_queries(params)
+        trip_type = _determine_trip_type(params.segments)
+        executed = _execute_flight_batch(queries, min(8, len(queries)))
 
-        # Build time restrictions
-        departure_window = params.departure_window or CONFIG.default_departure_window
-        time_restrictions = build_time_restrictions(departure_window) if departure_window else None
+        if executed["failed"]:
+            error_result = next(
+                (item for item in executed["results"] if not item.get("success", False)),
+                None,
+            )
+            return {
+                "success": False,
+                "error": error_result.get("error", "Date search failed")
+                if error_result
+                else "Date search failed",
+                "dates": [],
+            }
 
-        # Build flight segments
-        segments, trip_type = build_date_search_segments(
-            origin=origin,
-            destination=destination,
-            start_date=params.start_date,
-            trip_duration=params.trip_duration,
-            is_round_trip=params.is_round_trip,
-            time_restrictions=time_restrictions,
-        )
+        date_results = []
+        for result in executed["results"]:
+            flights = result["flights"]
+            if not flights:
+                continue
 
-        # Create search filters
-        filters = DateSearchFilters(
-            trip_type=trip_type,
-            passenger_info=PassengerInfo(adults=params.passengers),
-            flight_segments=segments,
-            stops=max_stops,
-            seat_type=cabin_class,
-            airlines=airlines,
-            from_date=params.start_date,
-            to_date=params.end_date,
-            duration=params.trip_duration if params.is_round_trip else None,
-        )
+            segment_dates = [segment.date for segment in queries[result["index"]][1].segments]
+            cheapest_price = min(flight["price"] for flight in flights)
+            date_results.append(
+                {
+                    "date": segment_dates[0],
+                    "segment_dates": segment_dates,
+                    "price": cheapest_price,
+                    "currency": CONFIG.default_currency,
+                    "return_date": segment_dates[1] if trip_type == TripType.ROUND_TRIP else None,
+                }
+            )
 
-        # Perform search
-        search_client = SearchDates()
-        dates = search_client.search(filters)
-
-        if not dates:
+        if not date_results:
             return {
                 "success": True,
                 "dates": [],
@@ -471,10 +577,7 @@ def _execute_date_search(params: DateSearchParams) -> dict[str, Any]:
             }
 
         if params.sort_by_price:
-            dates.sort(key=lambda x: x.price)
-
-        # Serialize results
-        date_results = [_serialize_date_result(d) for d in dates]
+            date_results.sort(key=lambda x: x["price"])
 
         if CONFIG.max_results:
             date_results = date_results[: CONFIG.max_results]
@@ -485,9 +588,10 @@ def _execute_date_search(params: DateSearchParams) -> dict[str, Any]:
             "count": len(date_results),
             "trip_type": trip_type.name,
             "date_range": f"{params.start_date} to {params.end_date}",
-            "duration": params.trip_duration if params.is_round_trip else None,
         }
 
+    except ValueError as e:
+        return {"success": False, "error": str(e), "dates": []}
     except ParseError as e:
         return {"success": False, "error": str(e), "dates": []}
     except Exception as e:
@@ -507,13 +611,10 @@ def _execute_date_search(params: DateSearchParams) -> dict[str, Any]:
     },
 )
 def search_flights(
-    origin: Annotated[str, Field(description="Departure airport IATA code (e.g., 'JFK')")],
-    destination: Annotated[str, Field(description="Arrival airport IATA code (e.g., 'LHR')")],
-    departure_date: Annotated[str, Field(description="Travel date in YYYY-MM-DD format")],
-    return_date: Annotated[
-        str | None,
-        Field(description="Return date in YYYY-MM-DD format (omit for one-way)"),
-    ] = None,
+    segments: Annotated[
+        list[FlightSearchSegmentParams],
+        Field(description="Ordered itinerary segments with explicit dates"),
+    ],
     departure_window: Annotated[
         str | None,
         Field(description="Deprecated alias for departure_time_window in 'HH-HH' format"),
@@ -555,19 +656,15 @@ def search_flights(
         Field(description="Maximum itinerary duration in minutes", ge=1),
     ] = None,
 ) -> dict[str, Any]:
-    """Search for flights between two airports on a specific date.
+    """Search for flights for an exact-date itinerary.
 
-    Returns a list of available flights with prices, durations, and leg details.
-    Supports one-way and round-trip searches with various filtering options.
+    Supports one-way, round-trip, and multi-city searches with shared filters.
     """
     effective_departure_window = (
         departure_time_window or departure_window or CONFIG.default_departure_window
     )
     params = FlightSearchParams(
-        origin=origin,
-        destination=destination,
-        departure_date=departure_date,
-        return_date=return_date,
+        segments=segments,
         departure_window=departure_window,
         departure_time_window=effective_departure_window,
         arrival_time_window=arrival_time_window,
@@ -693,18 +790,12 @@ def search_flights_batch(
     },
 )
 def search_dates(
-    origin: Annotated[str, Field(description="Departure airport IATA code (e.g., 'JFK')")],
-    destination: Annotated[str, Field(description="Arrival airport IATA code (e.g., 'LHR')")],
+    segments: Annotated[
+        list[DateSearchSegmentParams],
+        Field(description="Ordered itinerary segments; later segments use day_offset"),
+    ],
     start_date: Annotated[str, Field(description="Start of date range in YYYY-MM-DD format")],
     end_date: Annotated[str, Field(description="End of date range in YYYY-MM-DD format")],
-    trip_duration: Annotated[
-        int,
-        Field(description="Trip duration in days for round-trips", ge=1),
-    ] = 3,
-    is_round_trip: Annotated[
-        bool,
-        Field(description="Search for round-trip flights"),
-    ] = False,
     airlines: Annotated[
         list[str] | None,
         Field(description="Filter by airline IATA codes (e.g., ['BA', 'AA'])"),
@@ -721,6 +812,10 @@ def search_dates(
         str | None,
         Field(description="Departure time window in 'HH-HH' 24h format (e.g., '6-20')"),
     ] = None,
+    arrival_time_window: Annotated[
+        str | None,
+        Field(description="Arrival time window in 'HH-HH' 24h format (e.g., '8-22')"),
+    ] = None,
     sort_by_price: Annotated[
         bool,
         Field(description="Sort results by price (lowest first)"),
@@ -730,23 +825,20 @@ def search_dates(
         Field(description="Number of adult passengers", ge=1),
     ] = None,
 ) -> dict[str, Any]:
-    """Find the cheapest travel dates between two airports within a date range.
+    """Find the cheapest itinerary dates within a date range.
 
-    Returns a list of dates with their prices, useful for flexible travel planning.
-    Supports both one-way and round-trip searches.
+    Segment 1 varies between start_date and end_date; later segments use day_offset.
     """
     effective_departure_window = departure_window or CONFIG.default_departure_window
     params = DateSearchParams(
-        origin=origin,
-        destination=destination,
+        segments=segments,
         start_date=start_date,
         end_date=end_date,
-        trip_duration=trip_duration,
-        is_round_trip=is_round_trip,
         airlines=airlines,
         cabin_class=cabin_class,
         max_stops=max_stops,
         departure_window=effective_departure_window,
+        arrival_time_window=arrival_time_window,
         sort_by_price=sort_by_price,
         passengers=passengers or CONFIG.default_passengers,
     )
@@ -790,11 +882,10 @@ def _build_budget_prompt(args: dict[str, str]) -> list[PromptMessage]:
     today = datetime.now(timezone.utc).date()
     start_date = args.get("start_date") or (today + timedelta(days=30)).isoformat()
     end_date = args.get("end_date") or (today + timedelta(days=90)).isoformat()
-    duration = args.get("duration", "7")
     text = (
-        "Use the `search_dates` tool to find the lowest fares between "
-        f"{origin} and {destination} for trips between {start_date} and {end_date}. "
-        f"Set trip_duration to {duration} days and sort the results by price."
+        "Use the `search_dates` tool to find the lowest fares for an itinerary that starts at "
+        f"{origin}, reaches {destination}, and departs between {start_date} and {end_date}. "
+        "Represent the trip with `segments` and use day offsets for later legs when needed."
     )
     return [
         PromptMessage(role="user", content=TextContent(type="text", text=text)),
@@ -904,7 +995,7 @@ def configuration_resource() -> str:
 # =============================================================================
 
 
-def run():
+def run() -> None:
     """Run the MCP server on STDIO."""
     mcp.run(transport="stdio")
 

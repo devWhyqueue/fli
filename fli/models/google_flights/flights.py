@@ -5,6 +5,7 @@ from enum import Enum
 from pydantic import (
     BaseModel,
     PositiveInt,
+    model_validator,
 )
 
 from fli.models.airline import Airline
@@ -37,6 +38,24 @@ class FlightSearchFilters(BaseModel):
     max_duration: PositiveInt | None = None
     layover_restrictions: LayoverRestrictions | None = None
     sort_by: SortBy = SortBy.NONE
+
+    @model_validator(mode="after")
+    def validate_flight_segments(self) -> "FlightSearchFilters":
+        """Ensure segment counts align with the selected trip type."""
+        segment_count = len(self.flight_segments)
+        if segment_count == 0:
+            raise ValueError("At least one flight segment is required")
+        if segment_count > 6:
+            raise ValueError("No more than 6 flight segments are supported")
+
+        if self.trip_type == TripType.ONE_WAY and segment_count != 1:
+            raise ValueError("One-way trip must have one flight segment")
+        if self.trip_type == TripType.ROUND_TRIP and segment_count != 2:
+            raise ValueError("Round trip must have two flight segments")
+        if self.trip_type == TripType.MULTI_CITY and segment_count < 2:
+            raise ValueError("Multi-city trip must have at least two flight segments")
+
+        return self
 
     def format(self) -> list:
         """Format filters into Google Flights API structure.

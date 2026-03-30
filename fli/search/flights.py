@@ -76,7 +76,7 @@ class SearchFlights:
             flights = [self._parse_flights_data(flight) for flight in flights_data]
 
             if (
-                filters.trip_type == TripType.ONE_WAY
+                filters.trip_type != TripType.ROUND_TRIP
                 or filters.flight_segments[0].selected_flight is not None
             ):
                 return flights

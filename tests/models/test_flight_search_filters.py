@@ -14,6 +14,7 @@ from fli.models import (
     SeatType,
     SortBy,
     TimeRestrictions,
+    TripType,
 )
 
 
@@ -259,3 +260,50 @@ def test_flight_search_filters(test_case):
     # Test URL encoding
     encoded_filters = search_filters.encode()
     assert test_case["encoded"] is None or encoded_filters == test_case["encoded"]
+
+
+def test_multicity_flight_search_filters_accept_multiple_segments():
+    """Test multi-city flight searches accept 3 segments."""
+    travel_date_1 = get_future_date(30)
+    travel_date_2 = get_future_date(33)
+    travel_date_3 = get_future_date(36)
+
+    search_filters = FlightSearchFilters(
+        trip_type=TripType.MULTI_CITY,
+        passenger_info=PassengerInfo(adults=1),
+        flight_segments=[
+            FlightSegment(
+                departure_airport=[[Airport.JFK, 0]],
+                arrival_airport=[[Airport.LAX, 0]],
+                travel_date=travel_date_1,
+            ),
+            FlightSegment(
+                departure_airport=[[Airport.LAX, 0]],
+                arrival_airport=[[Airport.SFO, 0]],
+                travel_date=travel_date_2,
+            ),
+            FlightSegment(
+                departure_airport=[[Airport.SFO, 0]],
+                arrival_airport=[[Airport.JFK, 0]],
+                travel_date=travel_date_3,
+            ),
+        ],
+    )
+
+    assert len(search_filters.format()[1][13]) == 3
+
+
+def test_round_trip_flight_search_filters_reject_wrong_segment_count():
+    """Test round-trip searches require exactly 2 segments."""
+    with pytest.raises(ValueError, match="Round trip must have two flight segments"):
+        FlightSearchFilters(
+            trip_type=TripType.ROUND_TRIP,
+            passenger_info=PassengerInfo(adults=1),
+            flight_segments=[
+                FlightSegment(
+                    departure_airport=[[Airport.JFK, 0]],
+                    arrival_airport=[[Airport.LAX, 0]],
+                    travel_date=get_future_date(30),
+                )
+            ],
+        )

@@ -83,6 +83,14 @@ class DateSearchFilters(BaseModel):
         if "trip_type" in info.data and info.data["trip_type"] == TripType.ROUND_TRIP:
             if len(v) != 2:
                 raise ValueError("Round trip must have two flight segments")
+            return v
+
+        if "trip_type" in info.data and info.data["trip_type"] == TripType.MULTI_CITY:
+            if len(v) < 2:
+                raise ValueError("Multi-city trip must have at least two flight segments")
+            if len(v) > 6:
+                raise ValueError("No more than 6 flight segments are supported")
+            return v
 
         # Ensure the travel date difference is the same as the duration
         if "duration" in info.data and info.data["duration"] is not None:

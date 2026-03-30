@@ -62,19 +62,17 @@ Add this configuration to your `claude_desktop_config.json`:
 
 ### `search_flights`
 
-Search for flights between two airports on a specific date.
+Search for exact-date itineraries, including one-way, round-trip, and multi-city trips.
 
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `origin` | string | Yes | - | Departure airport IATA code (e.g., 'JFK') |
-| `destination` | string | Yes | - | Arrival airport IATA code (e.g., 'LHR') |
-| `departure_date` | string | Yes | - | Travel date in YYYY-MM-DD format |
-| `return_date` | string | No | null | Return date for round trips |
+| `segments` | list | Yes | - | Ordered itinerary segments with `origin`, `destination`, and `date` |
 | `cabin_class` | string | No | ECONOMY | ECONOMY, PREMIUM_ECONOMY, BUSINESS, or FIRST |
 | `max_stops` | string | No | ANY | ANY, NON_STOP, ONE_STOP, or TWO_PLUS_STOPS |
 | `departure_window` | string | No | null | Time window in 'HH-HH' format (e.g., '6-20') |
+| `arrival_time_window` | string | No | null | Arrival time window in 'HH-HH' format (e.g., '8-22') |
 | `airlines` | list | No | null | Filter by airline codes (e.g., ['BA', 'AA']) |
 | `sort_by` | string | No | CHEAPEST | CHEAPEST, DURATION, DEPARTURE_TIME, or ARRIVAL_TIME |
 | `passengers` | int | No | 1 | Number of adult passengers |
@@ -108,21 +106,19 @@ Search for flights between two airports on a specific date.
 
 ### `search_dates`
 
-Find the cheapest travel dates between two airports within a date range.
+Find the cheapest itinerary dates within a date range by scanning exact-date searches.
 
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `origin` | string | Yes | - | Departure airport IATA code (e.g., 'JFK') |
-| `destination` | string | Yes | - | Arrival airport IATA code (e.g., 'LHR') |
+| `segments` | list | Yes | - | Ordered itinerary templates; segment 1 uses the scanned date and later segments use `day_offset` |
 | `start_date` | string | Yes | - | Start of date range in YYYY-MM-DD format |
 | `end_date` | string | Yes | - | End of date range in YYYY-MM-DD format |
-| `trip_duration` | int | No | 3 | Trip duration in days (for round-trips) |
-| `is_round_trip` | bool | No | false | Search for round-trip flights |
 | `cabin_class` | string | No | ECONOMY | ECONOMY, PREMIUM_ECONOMY, BUSINESS, or FIRST |
 | `max_stops` | string | No | ANY | ANY, NON_STOP, ONE_STOP, or TWO_PLUS_STOPS |
 | `departure_window` | string | No | null | Time window in 'HH-HH' format (e.g., '6-20') |
+| `arrival_time_window` | string | No | null | Arrival time window in 'HH-HH' format (e.g., '8-22') |
 | `airlines` | list | No | null | Filter by airline codes (e.g., ['BA', 'AA']) |
 | `sort_by_price` | bool | No | false | Sort results by price (lowest first) |
 | `passengers` | int | No | 1 | Number of adult passengers |
@@ -135,19 +131,21 @@ Find the cheapest travel dates between two airports within a date range.
   "dates": [
     {
       "date": "2026-03-15",
+      "segment_dates": ["2026-03-15", "2026-03-22"],
       "price": 350.00,
       "currency": "USD",
-      "return_date": null
+      "return_date": "2026-03-22"
     },
     {
       "date": "2026-03-18",
+      "segment_dates": ["2026-03-18", "2026-03-25"],
       "price": 375.00,
       "currency": "USD",
-      "return_date": null
+      "return_date": "2026-03-25"
     }
   ],
   "count": 30,
-  "trip_type": "ONE_WAY",
+  "trip_type": "ROUND_TRIP",
   "date_range": "2026-03-01 to 2026-03-31"
 }
 ```
@@ -196,11 +194,11 @@ Once configured with Claude Desktop, you can have natural conversations:
 
 > **User**: "Find me flights from New York to London next month"
 > 
-> **Claude**: *Uses `search_flights` with origin=JFK, destination=LHR*
+> **Claude**: *Uses `search_flights` with one dated segment from JFK to LHR*
 
 > **User**: "What are the cheapest dates to fly to Tokyo from San Francisco in April?"
 > 
-> **Claude**: *Uses `search_dates` with origin=SFO, destination=NRT, start_date and end_date in April*
+> **Claude**: *Uses `search_dates` with a segment template starting at SFO, ending at NRT, and an April date window*
 
 > **User**: "Search for business class, non-stop flights from LAX to Paris on March 15th"
 > 

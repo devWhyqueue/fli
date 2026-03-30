@@ -56,10 +56,7 @@ The MCP server provides three main tools:
 
 | Parameter          | Type   | Description                                         |
 |--------------------|--------|-----------------------------------------------------|
-| `origin`           | string | Departure airport IATA code (e.g., 'JFK')           |
-| `destination`      | string | Arrival airport IATA code (e.g., 'LHR')             |
-| `departure_date`   | string | Travel date in YYYY-MM-DD format                    |
-| `return_date`      | string | Return date for round trips (optional)              |
+| `segments`         | list   | Ordered itinerary segments with `origin`, `destination`, and `date` |
 | `cabin_class`      | string | ECONOMY, PREMIUM_ECONOMY, BUSINESS, or FIRST        |
 | `max_stops`        | string | ANY, NON_STOP, ONE_STOP, or TWO_PLUS_STOPS          |
 | `departure_window` | string | Deprecated alias for `departure_time_window`         |
@@ -75,15 +72,13 @@ The MCP server provides three main tools:
 
 | Parameter          | Type   | Description                                  |
 |--------------------|--------|----------------------------------------------|
-| `origin`           | string | Departure airport IATA code (e.g., 'JFK')    |
-| `destination`      | string | Arrival airport IATA code (e.g., 'LHR')      |
+| `segments`         | list   | Ordered itinerary templates; segment 1 anchors the scan and later segments use `day_offset` |
 | `start_date`       | string | Start of date range in YYYY-MM-DD format     |
 | `end_date`         | string | End of date range in YYYY-MM-DD format       |
-| `trip_duration`    | int    | Trip duration in days (for round-trips)      |
-| `is_round_trip`    | bool   | Whether to search for round-trip flights     |
 | `cabin_class`      | string | ECONOMY, PREMIUM_ECONOMY, BUSINESS, or FIRST |
 | `max_stops`        | string | ANY, NON_STOP, ONE_STOP, or TWO_PLUS_STOPS   |
 | `departure_window` | string | Time window in 'HH-HH' format (e.g., '6-20') |
+| `arrival_time_window` | string | Arrival window in 'HH-HH' format (e.g., '8-22') |
 | `airlines`         | list   | Filter by airline codes (e.g., ['BA', 'AA']) |
 | `sort_by_price`    | bool   | Sort results by price (lowest first)         |
 | `passengers`       | int    | Number of adult passengers                   |
