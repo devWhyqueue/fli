@@ -1,9 +1,14 @@
+from fli.models.airline import Airline
+from fli.models.airport import Airport
+
 from .base import (
     FlightLeg,
     FlightResult,
     FlightSegment,
     LayoverRestrictions,
     MaxStops,
+    NativeMultiCityResult,
+    NativeMultiCityStep,
     PassengerInfo,
     PriceLimit,
     SeatType,
@@ -19,6 +24,8 @@ __all__ = [
     "Airport",
     "DateSearchFilters",
     "FlightLeg",
+    "NativeMultiCityResult",
+    "NativeMultiCityStep",
     "FlightResult",
     "FlightSearchFilters",
     "FlightSegment",

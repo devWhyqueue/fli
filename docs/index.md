@@ -17,7 +17,8 @@ flights and analyze pricing data.
 
 * Model Context Protocol server for AI assistants
 * Natural language flight search with Claude
-* Two powerful tools: `search_flights` and `search_dates`
+* Three MCP tools: `search_flights`, `search_flights_batch`, and `search_dates`
+* Prompt templates and a configuration resource for MCP-aware clients
 * Easy configuration with environment variables
 
 ### 🔍 Search Capabilities

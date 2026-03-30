@@ -307,3 +307,40 @@ def test_round_trip_flight_search_filters_reject_wrong_segment_count():
                 )
             ],
         )
+
+
+def test_flight_search_filters_include_layover_duration_when_set():
+    """FlightSearchFilters should emit max layover duration in the segment payload."""
+    search_filters = FlightSearchFilters(
+        passenger_info=PassengerInfo(adults=1),
+        flight_segments=[
+            FlightSegment(
+                departure_airport=[[Airport.JFK, 0]],
+                arrival_airport=[[Airport.LHR, 0]],
+                travel_date=get_future_date(30),
+            )
+        ],
+        layover_restrictions=LayoverRestrictions(max_duration=180),
+    )
+
+    formatted_segments = search_filters.format()[1][13]
+
+    assert formatted_segments[0][12] == 180
+
+
+def test_flight_search_filters_omit_layover_duration_when_unset():
+    """FlightSearchFilters should leave the layover duration slot empty when unset."""
+    search_filters = FlightSearchFilters(
+        passenger_info=PassengerInfo(adults=1),
+        flight_segments=[
+            FlightSegment(
+                departure_airport=[[Airport.JFK, 0]],
+                arrival_airport=[[Airport.LHR, 0]],
+                travel_date=get_future_date(30),
+            )
+        ],
+    )
+
+    formatted_segments = search_filters.format()[1][13]
+
+    assert formatted_segments[0][12] is None

@@ -21,6 +21,8 @@ from fli.models import (
 from fli.models.google_flights.base import TripType
 from fli.search import SearchFlights
 
+pytestmark_live = pytest.mark.live
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
 def search_with_retry(search: SearchFlights, search_params):
@@ -160,6 +162,7 @@ def complex_round_trip_params():
         "complex_search_params",
     ],
 )
+@pytestmark_live
 def test_search_functionality(search, search_params_fixture, request):
     """Test flight search functionality with different data sets."""
     search_params = request.getfixturevalue(search_params_fixture)
@@ -167,6 +170,7 @@ def test_search_functionality(search, search_params_fixture, request):
     assert isinstance(results, list)
 
 
+@pytestmark_live
 def test_multiple_searches(search, basic_search_params, complex_search_params):
     """Test performing multiple searches with the same Search instance."""
     # First search
@@ -182,6 +186,7 @@ def test_multiple_searches(search, basic_search_params, complex_search_params):
     assert isinstance(results3, list)
 
 
+@pytestmark_live
 def test_basic_round_trip_search(search, round_trip_search_params):
     """Test basic round trip flight search functionality."""
     results = search.search(round_trip_search_params)
@@ -199,6 +204,7 @@ def test_basic_round_trip_search(search, round_trip_search_params):
         assert return_flight.legs[-1].arrival_airport == Airport.SFO
 
 
+@pytestmark_live
 def test_complex_round_trip_search(search, complex_round_trip_params):
     """Test complex round trip flight search with multiple passengers and stops."""
     results = search.search(complex_round_trip_params)
@@ -218,6 +224,7 @@ def test_complex_round_trip_search(search, complex_round_trip_params):
         assert return_flight.stops <= MaxStops.ONE_STOP_OR_FEWER.value
 
 
+@pytestmark_live
 def test_round_trip_with_selected_outbound(search, round_trip_search_params):
     """Test round trip search with a pre-selected outbound flight."""
     # First get outbound flights
@@ -239,7 +246,7 @@ def test_round_trip_with_selected_outbound(search, round_trip_search_params):
 
 
 def test_multicity_search_returns_direct_results_without_round_trip_chaining(monkeypatch):
-    """Test multi-city searches do not recurse into round-trip pairing."""
+    """Test multi-city searches use one native request and return direct results."""
     future_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
     search = SearchFlights()
     filters = FlightSearchFilters(
@@ -266,6 +273,7 @@ def test_multicity_search_returns_direct_results_without_round_trip_chaining(mon
         seat_type=SeatType.ECONOMY,
         sort_by=SortBy.CHEAPEST,
     )
+    post_calls = 0
 
     class FakeResponse:
         text = ")]}'" + json.dumps([[None, None, json.dumps([None, None, [[["flight"]]], None])]])
@@ -274,7 +282,12 @@ def test_multicity_search_returns_direct_results_without_round_trip_chaining(mon
         def raise_for_status():
             return None
 
-    monkeypatch.setattr(search.client, "post", lambda **kwargs: FakeResponse())
+    def fake_post(**kwargs):
+        nonlocal post_calls
+        post_calls += 1
+        return FakeResponse()
+
+    monkeypatch.setattr(search.client, "post", fake_post)
     monkeypatch.setattr(
         SearchFlights,
         "_parse_flights_data",
@@ -303,10 +316,11 @@ def test_multicity_search_returns_direct_results_without_round_trip_chaining(mon
     assert isinstance(results, list)
     assert len(results) == 1
     assert not isinstance(results[0], tuple)
+    assert post_calls == 1
 
 
-def test_multicity_search_combines_segment_results_into_full_itineraries(monkeypatch):
-    """Test multi-city searches return full itineraries across all requested segments."""
+def test_multicity_search_uses_native_results_without_recombining(monkeypatch):
+    """Test multi-city searches delegate once to the native one-way request path."""
     search = SearchFlights()
     base_time = datetime.now() + timedelta(days=30)
     filters = FlightSearchFilters(
@@ -333,12 +347,93 @@ def test_multicity_search_combines_segment_results_into_full_itineraries(monkeyp
         seat_type=SeatType.ECONOMY,
         sort_by=SortBy.CHEAPEST,
     )
+    native_result = FlightResult(
+        price=360.0,
+        duration=540,
+        stops=0,
+        legs=[
+            FlightLeg(
+                airline=Airline.AA,
+                flight_number="AA100",
+                departure_airport=Airport.JFK,
+                arrival_airport=Airport.LAX,
+                departure_datetime=base_time,
+                arrival_datetime=base_time + timedelta(hours=3),
+                duration=180,
+            ),
+            FlightLeg(
+                airline=Airline.AA,
+                flight_number="AA101",
+                departure_airport=Airport.LAX,
+                arrival_airport=Airport.SFO,
+                departure_datetime=base_time + timedelta(days=3),
+                arrival_datetime=base_time + timedelta(days=3, hours=3),
+                duration=180,
+            ),
+            FlightLeg(
+                airline=Airline.AA,
+                flight_number="AA102",
+                departure_airport=Airport.SFO,
+                arrival_airport=Airport.JFK,
+                departure_datetime=base_time + timedelta(days=6),
+                arrival_datetime=base_time + timedelta(days=6, hours=3),
+                duration=180,
+            ),
+        ],
+        segment_prices=[100.0, 120.0, 140.0],
+    )
+    call_filters: list[FlightSearchFilters] = []
+
+    def fake_search_one_way(received_filters):
+        call_filters.append(received_filters)
+        return [native_result]
+
+    monkeypatch.setattr(search, "_search_one_way", fake_search_one_way)
+
+    results = search.search(filters)
+
+    assert isinstance(results, list)
+    assert len(results) == 1
+    assert results[0] is native_result
+    assert len(call_filters) == 1
+    assert call_filters[0] is filters
+
+
+def test_native_multi_city_workflow_auto_picks_cheapest(monkeypatch):
+    """Native multi-city workflow should pick the cheapest option at each step."""
+    search = SearchFlights()
+    base_time = datetime.now() + timedelta(days=30)
+    filters = FlightSearchFilters(
+        trip_type=TripType.MULTI_CITY,
+        passenger_info=PassengerInfo(adults=1),
+        flight_segments=[
+            FlightSegment(
+                departure_airport=[[Airport.JFK, 0]],
+                arrival_airport=[[Airport.LAX, 0]],
+                travel_date=base_time.strftime("%Y-%m-%d"),
+            ),
+            FlightSegment(
+                departure_airport=[[Airport.LAX, 0]],
+                arrival_airport=[[Airport.SFO, 0]],
+                travel_date=(base_time + timedelta(days=3)).strftime("%Y-%m-%d"),
+            ),
+            FlightSegment(
+                departure_airport=[[Airport.SFO, 0]],
+                arrival_airport=[[Airport.JFK, 0]],
+                travel_date=(base_time + timedelta(days=6)).strftime("%Y-%m-%d"),
+            ),
+        ],
+        stops=MaxStops.ANY,
+        seat_type=SeatType.ECONOMY,
+        sort_by=SortBy.CHEAPEST,
+    )
 
     def make_result(
         departure_airport: Airport,
         arrival_airport: Airport,
         departure_time: datetime,
         price: float,
+        flight_number: str,
     ) -> FlightResult:
         return FlightResult(
             price=price,
@@ -347,7 +442,7 @@ def test_multicity_search_combines_segment_results_into_full_itineraries(monkeyp
             legs=[
                 FlightLeg(
                     airline=Airline.AA,
-                    flight_number="AA100",
+                    flight_number=flight_number,
                     departure_airport=departure_airport,
                     arrival_airport=arrival_airport,
                     departure_datetime=departure_time,
@@ -357,40 +452,41 @@ def test_multicity_search_combines_segment_results_into_full_itineraries(monkeyp
             ],
         )
 
-    segment_payloads = [
-        [make_result(Airport.JFK, Airport.LAX, base_time, 100.0)],
-        [make_result(Airport.LAX, Airport.SFO, base_time + timedelta(days=3), 120.0)],
-        [make_result(Airport.SFO, Airport.JFK, base_time + timedelta(days=6), 140.0)],
+    sequence = [
+        [
+            make_result(Airport.JFK, Airport.LAX, base_time, 300.0, "AA300"),
+            make_result(Airport.JFK, Airport.LAX, base_time, 200.0, "AA200"),
+        ],
+        [
+            make_result(Airport.LAX, Airport.SFO, base_time + timedelta(days=3), 450.0, "AA450"),
+            make_result(Airport.LAX, Airport.SFO, base_time + timedelta(days=3), 350.0, "AA350"),
+        ],
+        [
+            make_result(Airport.SFO, Airport.JFK, base_time + timedelta(days=6), 600.0, "AA600"),
+            make_result(Airport.SFO, Airport.JFK, base_time + timedelta(days=6), 500.0, "AA500"),
+        ],
     ]
+    observed_selected_flights: list[list[FlightResult | None]] = []
 
-    def fake_search_one_way(single_segment_filters):
-        segment = single_segment_filters.flight_segments[0]
-        route = (
-            segment.departure_airport[0][0],
-            segment.arrival_airport[0][0],
+    def fake_search_one_way(received_filters):
+        observed_selected_flights.append(
+            [segment.selected_flight for segment in received_filters.flight_segments]
         )
-        if route == (Airport.JFK, Airport.LAX):
-            return segment_payloads[0]
-        if route == (Airport.LAX, Airport.SFO):
-            return segment_payloads[1]
-        if route == (Airport.SFO, Airport.JFK):
-            return segment_payloads[2]
-        raise AssertionError(f"Unexpected route: {route}")
+        return sequence[len(observed_selected_flights) - 1]
 
     monkeypatch.setattr(search, "_search_one_way", fake_search_one_way)
 
-    results = search.search(filters)
+    result = search.search_multi_city_native(filters)
 
-    assert isinstance(results, list)
-    assert len(results) == 1
-    itinerary = results[0]
-    assert itinerary.price == 360.0
-    assert itinerary.duration == 540
-    assert len(itinerary.legs) == 3
-    assert itinerary.segment_prices == [100.0, 120.0, 140.0]
-    assert itinerary.legs[0].departure_airport == Airport.JFK
-    assert itinerary.legs[1].departure_airport == Airport.LAX
-    assert itinerary.legs[2].departure_airport == Airport.SFO
+    assert result is not None
+    assert result.final_price == 500.0
+    assert result.segment_prices is None
+    assert [step.displayed_price for step in result.step_trace] == [200.0, 350.0, 500.0]
+    assert len(result.completed_itinerary.legs) == 3
+    assert observed_selected_flights[0] == [None, None, None]
+    assert observed_selected_flights[1][0] is not None
+    assert observed_selected_flights[1][1] is None
+    assert observed_selected_flights[2][1] is not None
 
 
 @pytest.mark.parametrize(
@@ -400,6 +496,7 @@ def test_multicity_search_combines_segment_results_into_full_itineraries(monkeyp
         "complex_round_trip_params",
     ],
 )
+@pytestmark_live
 def test_round_trip_result_structure(search, search_params_fixture, request):
     """Test the structure of round trip search results with different parameters."""
     search_params = request.getfixturevalue(search_params_fixture)
@@ -454,3 +551,67 @@ class TestParsePrice:
         """Test _parse_price returns 0.0 when inner list is None."""
         data = [None, [None]]
         assert SearchFlights._parse_price(data) == 0.0
+
+
+class TestSelectionToken:
+    """Tests for native multi-city selection token extraction and serialization."""
+
+    def test_parse_selection_token_valid_data(self):
+        """The hidden per-option token should be decoded from the option payload."""
+        data = [
+            None,
+            [
+                [None, 1400],
+                "CjRIWm1NTWdvWUNkSlFBRFlxNVFCRy0tLS0tLS0tLS1lZmcyNEFBQUFBR25LUG5NS3lQSzhBEg1TTjI1OTJ8U04yMDkzGgsI1sUIEAIaA0VVUjgccI7pCQ==",
+            ],
+        ]
+
+        assert (
+            SearchFlights._parse_selection_token(data)
+            == "HZmMMgoYCdJQADYq5QBG----------efg24AAAAAGnKPnMKyPK8A"
+        )
+
+    def test_parse_selection_token_missing_data(self):
+        """Malformed option payloads should not crash token extraction."""
+        assert SearchFlights._parse_selection_token([None, None]) is None
+
+    def test_selected_flight_serialization_includes_selection_token(self):
+        """Stepwise follow-up requests should preserve the opaque selection token."""
+        departure_time = datetime.now() + timedelta(days=30)
+        filters = FlightSearchFilters(
+            trip_type=TripType.MULTI_CITY,
+            passenger_info=PassengerInfo(adults=1),
+            flight_segments=[
+                FlightSegment(
+                    departure_airport=[[Airport.JFK, 0]],
+                    arrival_airport=[[Airport.LAX, 0]],
+                    travel_date=departure_time.strftime("%Y-%m-%d"),
+                    selected_flight=FlightResult(
+                        price=200.0,
+                        duration=180,
+                        stops=0,
+                        selection_token="opaque-token",
+                        legs=[
+                            FlightLeg(
+                                airline=Airline.AA,
+                                flight_number="AA200",
+                                departure_airport=Airport.JFK,
+                                arrival_airport=Airport.LAX,
+                                departure_datetime=departure_time,
+                                arrival_datetime=departure_time + timedelta(hours=3),
+                                duration=180,
+                            )
+                        ],
+                    ),
+                ),
+                FlightSegment(
+                    departure_airport=[[Airport.LAX, 0]],
+                    arrival_airport=[[Airport.SFO, 0]],
+                    travel_date=(departure_time + timedelta(days=3)).strftime("%Y-%m-%d"),
+                ),
+            ],
+        )
+
+        formatted = filters.format()
+
+        assert formatted[1][13][0][8][0][3] == "opaque-token"

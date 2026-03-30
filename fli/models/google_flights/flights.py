@@ -2,11 +2,7 @@ import json
 import urllib.parse
 from enum import Enum
 
-from pydantic import (
-    BaseModel,
-    PositiveInt,
-    model_validator,
-)
+from pydantic import BaseModel, PositiveInt, model_validator
 
 from fli.models.airline import Airline
 from fli.models.airport import Airport
@@ -58,152 +54,15 @@ class FlightSearchFilters(BaseModel):
         return self
 
     def format(self) -> list:
-        """Format filters into Google Flights API structure.
-
-        This method converts the FlightSearchFilters model into the specific nested list/dict
-        structure required by Google Flights' API.
-
-        The output format matches Google Flights' internal API structure, with careful handling
-        of nested arrays and proper serialization of enums and model objects.
-
-        Returns:
-            list: A formatted list structure ready for the Google Flights API request
-
-        """
-
-        def serialize(obj):
-            if isinstance(obj, Airport) or isinstance(obj, Airline):
-                return obj.name
-            if isinstance(obj, Enum):
-                return obj.value
-            if isinstance(obj, list):
-                return [serialize(item) for item in obj]
-            if isinstance(obj, dict):
-                return {key: serialize(value) for key, value in obj.items()}
-            if isinstance(obj, BaseModel):
-                return serialize(obj.dict(exclude_none=True))
-            return obj
-
-        # Format flight segments
-        formatted_segments = []
-        for segment in self.flight_segments:
-            # Format airport codes with correct nesting
-            segment_filters = [
-                [
-                    [
-                        [serialize(airport[0]), serialize(airport[1])]
-                        for airport in segment.departure_airport
-                    ]
-                ],
-                [
-                    [
-                        [serialize(airport[0]), serialize(airport[1])]
-                        for airport in segment.arrival_airport
-                    ]
-                ],
-            ]
-
-            # Time restrictions
-            if segment.time_restrictions:
-                time_filters = [
-                    segment.time_restrictions.earliest_departure,
-                    segment.time_restrictions.latest_departure,
-                    segment.time_restrictions.earliest_arrival,
-                    segment.time_restrictions.latest_arrival,
-                ]
-            else:
-                time_filters = None
-
-            # Airlines
-            airlines_filters = None
-            if self.airlines:
-                sorted_airlines = sorted(self.airlines, key=lambda x: x.value)
-                airlines_filters = [serialize(airline) for airline in sorted_airlines]
-
-            # Layover restrictions
-            layover_airports = (
-                [serialize(a) for a in self.layover_restrictions.airports]
-                if self.layover_restrictions and self.layover_restrictions.airports
-                else None
-            )
-            layover_duration = (
-                self.layover_restrictions.max_duration if self.layover_restrictions else None
-            )
-
-            # Selected flight (to fetch return flights)
-            selected_flights = None
-            if self.trip_type == TripType.ROUND_TRIP and segment.selected_flight is not None:
-                selected_flights = [
-                    [
-                        serialize(leg.departure_airport.name),
-                        serialize(leg.departure_datetime.strftime("%Y-%m-%d")),
-                        serialize(leg.arrival_airport.name),
-                        None,
-                        serialize(leg.airline.name),
-                        serialize(leg.flight_number),
-                    ]
-                    for leg in segment.selected_flight.legs
-                ]
-
-            segment_formatted = [
-                segment_filters[0],  # departure airport
-                segment_filters[1],  # arrival airport
-                time_filters,  # time restrictions
-                serialize(self.stops.value),  # stops
-                airlines_filters,  # airlines
-                None,  # placeholder
-                segment.travel_date,  # travel date
-                [self.max_duration] if self.max_duration else None,  # max duration
-                selected_flights,  # selected flight (to fetch return flights)
-                layover_airports,  # layover airports
-                None,  # placeholder
-                None,  # placeholder
-                layover_duration,  # layover duration
-                None,  # emissions
-                3,  # constant value
-            ]
-            formatted_segments.append(segment_formatted)
-
-        # Create the main filters structure
-        passenger_filters = [
-            self.passenger_info.adults,
-            self.passenger_info.children,
-            self.passenger_info.infants_on_lap,
-            self.passenger_info.infants_in_seat,
-        ]
-        # Google Flights includes cabin-luggage count as the 5th passenger filter value.
-        if self.passenger_info.num_cabin_luggage is not None:
-            passenger_filters.append(self.passenger_info.num_cabin_luggage)
-
-        filters = [
+        """Format filters into the nested Google Flights API payload."""
+        return [
             [],  # empty array at start
-            [
-                None,  # placeholder
-                None,  # placeholder
-                serialize(self.trip_type.value),
-                None,  # placeholder
-                [],  # empty array
-                serialize(self.seat_type.value),
-                passenger_filters,
-                [None, self.price_limit.max_price] if self.price_limit else None,
-                None,  # placeholder
-                None,  # placeholder
-                None,  # placeholder
-                None,  # placeholder
-                None,  # placeholder
-                formatted_segments,
-                None,  # placeholder
-                None,  # placeholder
-                None,  # placeholder
-                1,  # placeholder (hardcoded to 1)
-            ],
-            serialize(self.sort_by.value),
+            _build_root_filter_block(self),
+            _serialize_filter_value(self.sort_by.value),
             0,  # constant
             0,  # constant
             2,  # constant
         ]
-
-        return filters
 
     def encode(self) -> str:
         """URL encode the formatted filters for API request."""
@@ -214,3 +73,144 @@ class FlightSearchFilters(BaseModel):
         wrapped_filters = [None, formatted_json]
         # Finally, encode the whole thing
         return urllib.parse.quote(json.dumps(wrapped_filters, separators=(",", ":")))
+
+
+def _serialize_filter_value(obj: object) -> object:
+    """Serialize a nested filter value into the wire format."""
+    if isinstance(obj, Airport | Airline):
+        return obj.name
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, list):
+        return [_serialize_filter_value(item) for item in obj]
+    if isinstance(obj, dict):
+        return {key: _serialize_filter_value(value) for key, value in obj.items()}
+    if isinstance(obj, BaseModel):
+        return _serialize_filter_value(obj.model_dump(exclude_none=True))
+    return obj
+
+
+def _format_segment(filters: FlightSearchFilters, segment: FlightSegment) -> list[object]:
+    """Format a single flight segment into the Google Flights wire shape."""
+    return [
+        _build_airport_filters(segment.departure_airport),
+        _build_airport_filters(segment.arrival_airport),
+        _build_time_filters(segment),
+        _serialize_filter_value(filters.stops.value),
+        _build_airlines_filters(filters.airlines),
+        None,
+        segment.travel_date,
+        [filters.max_duration] if filters.max_duration else None,
+        _build_selected_flights(segment),
+        _build_layover_airports(filters.layover_restrictions),
+        None,
+        None,
+        _build_layover_duration(filters.layover_restrictions),
+        None,
+        3,
+    ]
+
+
+def _build_airport_filters(airports: list[list[Airport | int]]) -> list[list[list[object]]]:
+    """Format the nested airport filter structure expected by Google Flights."""
+    return [[_serialize_airport_filter(airport) for airport in airports]]
+
+
+def _serialize_airport_filter(airport: list[Airport | int]) -> list[object]:
+    """Serialize one airport filter row."""
+    return [_serialize_filter_value(airport[0]), _serialize_filter_value(airport[1])]
+
+
+def _build_time_filters(segment: FlightSegment) -> list[int | None] | None:
+    """Build time restriction filters for one segment."""
+    if segment.time_restrictions is None:
+        return None
+    return [
+        segment.time_restrictions.earliest_departure,
+        segment.time_restrictions.latest_departure,
+        segment.time_restrictions.earliest_arrival,
+        segment.time_restrictions.latest_arrival,
+    ]
+
+
+def _build_airlines_filters(airlines: list[Airline] | None) -> list[object] | None:
+    """Build the airline restriction list."""
+    if not airlines:
+        return None
+    return [
+        _serialize_filter_value(airline)
+        for airline in sorted(airlines, key=lambda item: item.value)
+    ]
+
+
+def _build_selected_flights(segment: FlightSegment) -> list[list[object | None]] | None:
+    """Build the selected-flight continuation payload for native flows."""
+    if segment.selected_flight is None:
+        return None
+    return [
+        [
+            _serialize_filter_value(leg.departure_airport.name),
+            _serialize_filter_value(leg.departure_datetime.strftime("%Y-%m-%d")),
+            _serialize_filter_value(leg.arrival_airport.name),
+            segment.selected_flight.selection_token,
+            _serialize_filter_value(leg.airline.name),
+            _serialize_filter_value(leg.flight_number),
+        ]
+        for leg in segment.selected_flight.legs
+    ]
+
+
+def _build_layover_airports(
+    layover_restrictions: LayoverRestrictions | None,
+) -> list[object] | None:
+    """Build layover airport restrictions."""
+    if layover_restrictions is None or not layover_restrictions.airports:
+        return None
+    return [_serialize_filter_value(airport) for airport in layover_restrictions.airports]
+
+
+def _build_layover_duration(layover_restrictions: LayoverRestrictions | None) -> int | None:
+    """Build the optional layover duration restriction."""
+    if layover_restrictions is None:
+        return None
+    return layover_restrictions.max_duration
+
+
+def _build_passenger_filters(passenger_info: PassengerInfo) -> list[int]:
+    """Build the passenger summary array used by Google Flights."""
+    passenger_filters = [
+        passenger_info.adults,
+        passenger_info.children,
+        passenger_info.infants_on_lap,
+        passenger_info.infants_in_seat,
+    ]
+    if passenger_info.num_cabin_luggage is not None:
+        passenger_filters.append(passenger_info.num_cabin_luggage)
+    return passenger_filters
+
+
+def _build_root_filter_block(filters: FlightSearchFilters) -> list[object]:
+    """Build the main nested filter block for the Google Flights payload."""
+    return [
+        None,
+        None,
+        _serialize_filter_value(filters.trip_type.value),
+        None,
+        [],
+        _serialize_filter_value(filters.seat_type.value),
+        _build_passenger_filters(filters.passenger_info),
+        [None, filters.price_limit.max_price] if filters.price_limit else None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        [_format_segment(filters, segment) for segment in filters.flight_segments],
+        None,
+        None,
+        None,
+        1,
+    ]
+
+
+_VULTURE_REFERENCES = (FlightSearchFilters.validate_flight_segments,)

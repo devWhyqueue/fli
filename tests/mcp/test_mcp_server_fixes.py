@@ -5,9 +5,8 @@ Covers:
   2. Round-trip price doubling (Google Flights returns combined RT price on outbound leg)
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
-
-import pytest
 
 from fli.mcp.server import FliMCP, _serialize_flight_result
 
@@ -19,8 +18,7 @@ from fli.mcp.server import FliMCP, _serialize_flight_result
 class TestListTools:
     """FliMCP.list_tools() must use the async get_tools() dict API."""
 
-    @pytest.mark.asyncio
-    async def test_list_tools_uses_get_tools(self):
+    def test_list_tools_uses_get_tools(self):
         """list_tools() should call get_tools() (FastMCP 2.x) not list_tools()."""
         server = FliMCP("test")
 
@@ -32,14 +30,13 @@ class TestListTools:
         # get_tools() returns a dict in FastMCP 2.x
         server._tool_manager.get_tools = AsyncMock(return_value={"search_flights": fake_tool})
 
-        tools = await server.list_tools()
+        tools = asyncio.run(server.list_tools())
 
         server._tool_manager.get_tools.assert_awaited_once()
         assert len(tools) == 1
         assert tools[0].name == "search_flights"
 
-    @pytest.mark.asyncio
-    async def test_list_tools_does_not_call_sync_list_tools(self):
+    def test_list_tools_does_not_call_sync_list_tools(self):
         """list_tools() must not call the old synchronous list_tools() method."""
         server = FliMCP("test")
 
@@ -50,7 +47,7 @@ class TestListTools:
         )
 
         # Should not raise
-        tools = await server.list_tools()
+        tools = asyncio.run(server.list_tools())
         server._tool_manager.list_tools.assert_not_called()
         assert tools == []
 

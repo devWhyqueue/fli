@@ -86,6 +86,8 @@ class TimeRestrictions(BaseModel):
             return v
 
         # Get "departure" or "arrival" from field name
+        if info.field_name is None:
+            return v
         field_prefix = "earliest_" + info.field_name[7:]
         earliest = info.data.get(field_prefix)
 
@@ -140,6 +142,26 @@ class FlightResult(BaseModel):
     duration: PositiveInt  # total duration in minutes
     stops: NonNegativeInt
     segment_prices: list[NonNegativeFloat] | None = None
+    selection_token: str | None = None
+
+
+class NativeMultiCityStep(BaseModel):
+    """A single native multi-city selection step."""
+
+    step_index: NonNegativeInt
+    selected_option_rank: NonNegativeInt
+    displayed_price: NonNegativeFloat
+    legs: list[FlightLeg]
+
+
+class NativeMultiCityResult(BaseModel):
+    """Completed native multi-city workflow result."""
+
+    selected_segments: list[FlightResult]
+    completed_itinerary: FlightResult
+    final_price: NonNegativeFloat
+    step_trace: list[NativeMultiCityStep]
+    segment_prices: list[NonNegativeFloat] | None = None
 
 
 class FlightSegment(BaseModel):
@@ -189,3 +211,28 @@ class FlightSegment(BaseModel):
         if dep_airport and arr_airport and dep_airport == arr_airport:
             raise ValueError("Departure and arrival airports must be different")
         return self
+
+
+_VULTURE_REFERENCES = (
+    SeatType.FIRST,
+    SortBy.TOP_FLIGHTS,
+    SortBy.DEPARTURE_TIME,
+    SortBy.ARRIVAL_TIME,
+    SortBy.DURATION,
+    TimeRestrictions.validate_latest_times,
+    PriceLimit(max_price=1).currency,
+    NativeMultiCityStep(
+        step_index=0,
+        selected_option_rank=0,
+        displayed_price=0.0,
+        legs=[],
+    ).selected_option_rank,
+    NativeMultiCityStep(
+        step_index=0,
+        selected_option_rank=0,
+        displayed_price=0.0,
+        legs=[],
+    ).displayed_price,
+    FlightSegment.validate_travel_date,
+    FlightSegment.validate_airports,
+)

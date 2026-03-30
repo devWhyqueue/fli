@@ -62,7 +62,7 @@ Add this configuration to your `claude_desktop_config.json`:
 
 ### `search_flights`
 
-Search for exact-date itineraries, including one-way, round-trip, and multi-city trips.
+Search for exact-date one-way, round-trip, and multi-city itineraries.
 
 **Parameters:**
 
@@ -76,6 +76,8 @@ Search for exact-date itineraries, including one-way, round-trip, and multi-city
 | `airlines` | list | No | null | Filter by airline codes (e.g., ['BA', 'AA']) |
 | `sort_by` | string | No | CHEAPEST | CHEAPEST, DURATION, DEPARTURE_TIME, or ARRIVAL_TIME |
 | `passengers` | int | No | 1 | Number of adult passengers |
+| `num_cabin_luggage` | int | No | null | Cabin baggage count used when pricing fares |
+| `duration` | int | No | null | Maximum itinerary duration in minutes |
 
 **Example Response:**
 
@@ -84,23 +86,23 @@ Search for exact-date itineraries, including one-way, round-trip, and multi-city
   "success": true,
   "flights": [
     {
-      "price": 450.00,
+      "price": 680.0,
       "currency": "USD",
       "legs": [
         {
           "departure_airport": "JFK",
-          "arrival_airport": "LHR",
+          "arrival_airport": "LAX",
           "departure_time": "2026-03-15T18:00:00",
-          "arrival_time": "2026-03-16T06:30:00",
-          "duration": 450,
-          "airline": "BA",
-          "flight_number": "BA178"
+          "arrival_time": "2026-03-15T21:00:00",
+          "duration": 180,
+          "airline": "AA",
+          "flight_number": "AA100"
         }
       ]
     }
   ],
-  "count": 5,
-  "trip_type": "ONE_WAY"
+  "count": 1,
+  "trip_type": "MULTI_CITY"
 }
 ```
 
@@ -173,7 +175,16 @@ Suggests the cheapest travel dates for a route within a flexible window.
 - `destination` - Arrival airport IATA code (required)
 - `start_date` - Start of the travel window (optional)
 - `end_date` - End of the travel window (optional)
-- `duration` - Desired trip length in days (optional)
+- `duration` - Desired trip length in days; used as a hint for `day_offset` values (optional)
+
+## Available Resources
+
+### `resource://fli-mcp/configuration`
+
+Returns:
+- current MCP default values
+- the JSON schema for those settings
+- the supported `FLI_MCP_*` environment variables
 
 ## Configuration
 

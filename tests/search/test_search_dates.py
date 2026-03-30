@@ -16,6 +16,8 @@ from fli.models import (
 from fli.models.google_flights.base import TripType
 from fli.search import SearchDates
 
+pytestmark = pytest.mark.live
+
 
 @pytest.fixture
 def search():
