@@ -146,6 +146,16 @@ class FlightSearchFilters(BaseModel):
             formatted_segments.append(segment_formatted)
 
         # Create the main filters structure
+        passenger_filters = [
+            self.passenger_info.adults,
+            self.passenger_info.children,
+            self.passenger_info.infants_on_lap,
+            self.passenger_info.infants_in_seat,
+        ]
+        # Google Flights includes cabin-luggage count as the 5th passenger filter value.
+        if self.passenger_info.num_cabin_luggage is not None:
+            passenger_filters.append(self.passenger_info.num_cabin_luggage)
+
         filters = [
             [],  # empty array at start
             [
@@ -155,12 +165,7 @@ class FlightSearchFilters(BaseModel):
                 None,  # placeholder
                 [],  # empty array
                 serialize(self.seat_type.value),
-                [
-                    self.passenger_info.adults,
-                    self.passenger_info.children,
-                    self.passenger_info.infants_on_lap,
-                    self.passenger_info.infants_in_seat,
-                ],
+                passenger_filters,
                 [None, self.price_limit.max_price] if self.price_limit else None,
                 None,  # placeholder
                 None,  # placeholder

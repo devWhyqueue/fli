@@ -8,6 +8,7 @@ travel dates.
 import json
 import os
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
@@ -219,7 +220,16 @@ class FlightSearchParams(BaseModel):
         None, description="Return date in YYYY-MM-DD format (omit for one-way)"
     )
     departure_window: str | None = Field(
+        None,
+        description=(
+            "Deprecated alias for departure_time_window in 'HH-HH' 24h format (e.g., '6-20')"
+        ),
+    )
+    departure_time_window: str | None = Field(
         None, description="Preferred departure time window in 'HH-HH' 24h format (e.g., '6-20')"
+    )
+    arrival_time_window: str | None = Field(
+        None, description="Preferred arrival time window in 'HH-HH' 24h format (e.g., '8-22')"
     )
     airlines: list[str] | None = Field(
         None, description="Filter by airline IATA codes (e.g., ['BA', 'AA'])"
@@ -239,6 +249,12 @@ class FlightSearchParams(BaseModel):
         CONFIG.default_passengers,
         ge=1,
         description="Number of adult passengers",
+    )
+    num_cabin_luggage: int | None = Field(
+        None, ge=0, le=2, description="Number of cabin luggage pieces to include in fare pricing"
+    )
+    duration: int | None = Field(
+        None, ge=1, description="Maximum total itinerary duration in minutes"
     )
 
 
@@ -340,8 +356,15 @@ def _execute_flight_search(params: FlightSearchParams) -> dict[str, Any]:
         airlines = parse_airlines(params.airlines)
 
         # Build time restrictions
-        departure_window = params.departure_window or CONFIG.default_departure_window
-        time_restrictions = build_time_restrictions(departure_window) if departure_window else None
+        departure_window = (
+            params.departure_time_window
+            or params.departure_window
+            or CONFIG.default_departure_window
+        )
+        time_restrictions = build_time_restrictions(
+            departure_window=departure_window,
+            arrival_window=params.arrival_time_window,
+        )
 
         # Build flight segments
         segments, trip_type = build_flight_segments(
@@ -355,11 +378,15 @@ def _execute_flight_search(params: FlightSearchParams) -> dict[str, Any]:
         # Create search filters
         filters = FlightSearchFilters(
             trip_type=trip_type,
-            passenger_info=PassengerInfo(adults=params.passengers),
+            passenger_info=PassengerInfo(
+                adults=params.passengers,
+                num_cabin_luggage=params.num_cabin_luggage,
+            ),
             flight_segments=segments,
             stops=max_stops,
             seat_type=cabin_class,
             airlines=airlines,
+            max_duration=params.duration,
             sort_by=sort_by,
         )
 
@@ -489,7 +516,15 @@ def search_flights(
     ] = None,
     departure_window: Annotated[
         str | None,
+        Field(description="Deprecated alias for departure_time_window in 'HH-HH' format"),
+    ] = None,
+    departure_time_window: Annotated[
+        str | None,
         Field(description="Departure time window in 'HH-HH' 24h format (e.g., '6-20')"),
+    ] = None,
+    arrival_time_window: Annotated[
+        str | None,
+        Field(description="Arrival time window in 'HH-HH' 24h format (e.g., '8-22')"),
     ] = None,
     airlines: Annotated[
         list[str] | None,
@@ -511,24 +546,38 @@ def search_flights(
         int | None,
         Field(description="Number of adult passengers", ge=1),
     ] = None,
+    num_cabin_luggage: Annotated[
+        int | None,
+        Field(description="Number of cabin luggage pieces to include in fare", ge=0, le=2),
+    ] = None,
+    duration: Annotated[
+        int | None,
+        Field(description="Maximum itinerary duration in minutes", ge=1),
+    ] = None,
 ) -> dict[str, Any]:
     """Search for flights between two airports on a specific date.
 
     Returns a list of available flights with prices, durations, and leg details.
     Supports one-way and round-trip searches with various filtering options.
     """
-    effective_departure_window = departure_window or CONFIG.default_departure_window
+    effective_departure_window = (
+        departure_time_window or departure_window or CONFIG.default_departure_window
+    )
     params = FlightSearchParams(
         origin=origin,
         destination=destination,
         departure_date=departure_date,
         return_date=return_date,
-        departure_window=effective_departure_window,
+        departure_window=departure_window,
+        departure_time_window=effective_departure_window,
+        arrival_time_window=arrival_time_window,
         airlines=airlines,
         cabin_class=cabin_class,
         max_stops=max_stops,
         sort_by=sort_by,
         passengers=passengers or CONFIG.default_passengers,
+        num_cabin_luggage=num_cabin_luggage,
+        duration=duration,
     )
     return _execute_flight_search(params)
 
@@ -539,6 +588,101 @@ def _search_flights_from_params(params: FlightSearchParams) -> dict[str, Any]:
 
 
 search_flights.fn = _search_flights_from_params  # type: ignore[attr-defined]
+
+
+def _execute_flight_batch(
+    queries: list[tuple[int, FlightSearchParams]], parallelism: int
+) -> dict[str, Any]:
+    """Execute batch flight searches with bounded concurrency."""
+    if not queries:
+        return {"success": True, "results": [], "count": 0, "failed": 0}
+
+    results: list[dict[str, Any] | None] = [None] * len(queries)
+    with ThreadPoolExecutor(max_workers=parallelism) as executor:
+        futures = {
+            executor.submit(_execute_flight_search, query): (position, original_index)
+            for position, (original_index, query) in enumerate(queries)
+        }
+        for future in as_completed(futures):
+            position, original_index = futures[future]
+            try:
+                payload = future.result()
+                results[position] = {"index": original_index, **payload}
+            except Exception as e:  # pragma: no cover - defensive guard
+                results[position] = {
+                    "index": original_index,
+                    "success": False,
+                    "error": f"Batch item execution failed: {e}",
+                    "flights": [],
+                }
+
+    final_results = [item for item in results if item is not None]
+    failures = sum(1 for item in final_results if not item.get("success", False))
+    return {
+        "success": failures == 0,
+        "results": final_results,
+        "count": len(final_results),
+        "failed": failures,
+        "parallelism": parallelism,
+    }
+
+
+@mcp.tool(
+    name="search_flights_batch",
+    annotations={
+        "title": "Search Flights Batch",
+        "readOnlyHint": True,
+        "idempotentHint": True,
+    },
+)
+def search_flights_batch(
+    queries: Annotated[
+        list[dict[str, Any]],
+        Field(description="List of flight-search query objects matching search_flights inputs"),
+    ],
+    parallelism: Annotated[
+        int,
+        Field(description="Max number of concurrent searches", ge=1, le=32),
+    ] = 4,
+) -> dict[str, Any]:
+    """Run multiple flight searches in one request and return per-item results."""
+    valid_queries: list[tuple[int, FlightSearchParams]] = []
+    precomputed: list[dict[str, Any] | None] = [None] * len(queries)
+
+    for index, query in enumerate(queries):
+        try:
+            valid_queries.append((index, FlightSearchParams(**query)))
+        except Exception as e:
+            precomputed[index] = {
+                "index": index,
+                "success": False,
+                "error": f"Invalid query payload: {e}",
+                "flights": [],
+            }
+
+    if not valid_queries:
+        return {
+            "success": False,
+            "results": [item for item in precomputed if item is not None],
+            "count": len(precomputed),
+            "failed": len(precomputed),
+            "parallelism": parallelism,
+        }
+
+    executed = _execute_flight_batch(valid_queries, parallelism)
+    for item in executed["results"]:
+        precomputed[item["index"]] = item
+
+    merged_results: list[dict[str, Any]] = [item for item in precomputed if item is not None]
+
+    failures = sum(1 for item in merged_results if not item.get("success", False))
+    return {
+        "success": failures == 0,
+        "results": merged_results,
+        "count": len(merged_results),
+        "failed": failures,
+        "parallelism": parallelism,
+    }
 
 
 @mcp.tool(

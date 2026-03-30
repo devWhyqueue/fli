@@ -44,11 +44,12 @@ fli-mcp-http  # serves at http://127.0.0.1:8000/mcp/
 
 ### MCP Tools Available
 
-The MCP server provides two main tools:
+The MCP server provides three main tools:
 
 | Tool                 | Description                                                 |
 |----------------------|-------------------------------------------------------------|
 | **`search_flights`** | Search for flights on a specific date with detailed filters |
+| **`search_flights_batch`** | Run many `search_flights` payloads in one call (supports `parallelism`) |
 | **`search_dates`**   | Find the cheapest travel dates across a flexible date range |
 
 #### `search_flights` Parameters
@@ -61,7 +62,11 @@ The MCP server provides two main tools:
 | `return_date`      | string | Return date for round trips (optional)              |
 | `cabin_class`      | string | ECONOMY, PREMIUM_ECONOMY, BUSINESS, or FIRST        |
 | `max_stops`        | string | ANY, NON_STOP, ONE_STOP, or TWO_PLUS_STOPS          |
-| `departure_window` | string | Time window in 'HH-HH' format (e.g., '6-20')        |
+| `departure_window` | string | Deprecated alias for `departure_time_window`         |
+| `departure_time_window` | string | Departure window in 'HH-HH' format (e.g., '6-20') |
+| `arrival_time_window` | string | Arrival window in 'HH-HH' format (e.g., '8-22')    |
+| `duration`         | int    | Maximum itinerary duration in minutes                |
+| `num_cabin_luggage`| int    | Cabin baggage count for pricing/filtering            |
 | `airlines`         | list   | Filter by airline codes (e.g., ['BA', 'AA'])        |
 | `sort_by`          | string | CHEAPEST, DURATION, DEPARTURE_TIME, or ARRIVAL_TIME |
 | `passengers`       | int    | Number of adult passengers                          |

@@ -105,6 +105,7 @@ class PassengerInfo(BaseModel):
     children: NonNegativeInt = 0
     infants_in_seat: NonNegativeInt = 0
     infants_on_lap: NonNegativeInt = 0
+    num_cabin_luggage: NonNegativeInt | None = None
 
 
 class PriceLimit(BaseModel):

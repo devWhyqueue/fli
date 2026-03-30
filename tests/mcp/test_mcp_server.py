@@ -7,6 +7,7 @@ from fli.mcp.server import (
     FlightSearchParams,
     search_dates,
     search_flights,
+    search_flights_batch,
 )
 
 
@@ -221,6 +222,35 @@ class TestMCPServer:
         assert params.cabin_class == "ECONOMY"  # default
         assert params.max_stops == "ANY"  # default
         assert params.sort_by == "CHEAPEST"  # default
+        assert params.num_cabin_luggage is None
+        assert params.duration is None
+
+    def test_batch_search(self):
+        """Test batch search interface and result shape."""
+        future_date = get_future_date(30)
+        result = search_flights_batch(
+            queries=[
+                {
+                    "origin": "JFK",
+                    "destination": "LHR",
+                    "departure_date": future_date,
+                    "departure_time_window": "6-20",
+                    "arrival_time_window": "8-22",
+                    "num_cabin_luggage": 1,
+                    "duration": 900,
+                },
+                {
+                    "origin": "INVALID",
+                    "destination": "LHR",
+                    "departure_date": future_date,
+                },
+            ]
+        )
+
+        assert "results" in result
+        assert result["count"] == 2
+        assert result["results"][0]["index"] == 0
+        assert result["results"][1]["index"] == 1
 
     def test_date_search_params_validation(self):
         """Test DateSearchParams validation."""
