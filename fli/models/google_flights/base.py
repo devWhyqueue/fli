@@ -145,25 +145,6 @@ class FlightResult(BaseModel):
     selection_token: str | None = None
 
 
-class NativeMultiCityStep(BaseModel):
-    """A single native multi-city selection step."""
-
-    step_index: NonNegativeInt
-    selected_option_rank: NonNegativeInt
-    displayed_price: NonNegativeFloat
-    legs: list[FlightLeg]
-
-
-class NativeMultiCityResult(BaseModel):
-    """Completed native multi-city workflow result."""
-
-    selected_segments: list[FlightResult]
-    completed_itinerary: FlightResult
-    final_price: NonNegativeFloat
-    step_trace: list[NativeMultiCityStep]
-    segment_prices: list[NonNegativeFloat] | None = None
-
-
 class FlightSegment(BaseModel):
     """A segment represents a single portion of a flight journey between two airports.
 
@@ -221,18 +202,6 @@ _VULTURE_REFERENCES = (
     SortBy.DURATION,
     TimeRestrictions.validate_latest_times,
     PriceLimit(max_price=1).currency,
-    NativeMultiCityStep(
-        step_index=0,
-        selected_option_rank=0,
-        displayed_price=0.0,
-        legs=[],
-    ).selected_option_rank,
-    NativeMultiCityStep(
-        step_index=0,
-        selected_option_rank=0,
-        displayed_price=0.0,
-        legs=[],
-    ).displayed_price,
     FlightSegment.validate_travel_date,
     FlightSegment.validate_airports,
 )

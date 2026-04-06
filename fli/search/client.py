@@ -8,13 +8,14 @@ This module provides a robust HTTP client that handles:
 - Error handling
 """
 
+import threading
 from typing import Any
 
 from curl_cffi import requests
 from ratelimit import limits, sleep_and_retry
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-client = None
+_thread_local = threading.local()
 
 
 class Client:
@@ -84,13 +85,14 @@ class Client:
 
 
 def get_client() -> Client:
-    """Get or create a shared HTTP client instance.
+    """Get or create a per-thread HTTP client instance.
 
     Returns:
-        Singleton instance of the HTTP client
+        Thread-local instance of the HTTP client
 
     """
-    global client
-    if not client:
+    client = getattr(_thread_local, "client", None)
+    if client is None:
         client = Client()
+        _thread_local.client = client
     return client

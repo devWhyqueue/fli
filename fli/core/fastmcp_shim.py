@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 
 @dataclass
@@ -86,7 +86,7 @@ class FastMCP:
 
         def decorator(func: Callable[..., object]) -> Callable[..., object]:
             """Attach `.fn` to the wrapped resource function."""
-            func.fn = func
+            cast(Any, func).fn = func
             return func
 
         return decorator

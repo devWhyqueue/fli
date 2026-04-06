@@ -26,4 +26,3 @@ def build_configuration_payload(
             "variables": _DEFAULT_VARIABLES,
         },
     }
-

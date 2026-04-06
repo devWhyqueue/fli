@@ -20,6 +20,8 @@ from fli.models import (
 )
 from fli.models.google_flights.base import TripType
 from fli.search import SearchFlights
+from fli.search.internal.flight_parsing import parse_price
+from fli.search.selection import parse_selection_token
 
 pytestmark_live = pytest.mark.live
 
@@ -320,7 +322,7 @@ def test_multicity_search_returns_direct_results_without_round_trip_chaining(mon
 
 
 def test_multicity_search_uses_native_results_without_recombining(monkeypatch):
-    """Test multi-city searches delegate once to the native one-way request path."""
+    """Test multi-city searches delegate once to the direct request path."""
     search = SearchFlights()
     base_time = datetime.now() + timedelta(days=30)
     filters = FlightSearchFilters(
@@ -399,96 +401,6 @@ def test_multicity_search_uses_native_results_without_recombining(monkeypatch):
     assert call_filters[0] is filters
 
 
-def test_native_multi_city_workflow_auto_picks_cheapest(monkeypatch):
-    """Native multi-city workflow should pick the cheapest option at each step."""
-    search = SearchFlights()
-    base_time = datetime.now() + timedelta(days=30)
-    filters = FlightSearchFilters(
-        trip_type=TripType.MULTI_CITY,
-        passenger_info=PassengerInfo(adults=1),
-        flight_segments=[
-            FlightSegment(
-                departure_airport=[[Airport.JFK, 0]],
-                arrival_airport=[[Airport.LAX, 0]],
-                travel_date=base_time.strftime("%Y-%m-%d"),
-            ),
-            FlightSegment(
-                departure_airport=[[Airport.LAX, 0]],
-                arrival_airport=[[Airport.SFO, 0]],
-                travel_date=(base_time + timedelta(days=3)).strftime("%Y-%m-%d"),
-            ),
-            FlightSegment(
-                departure_airport=[[Airport.SFO, 0]],
-                arrival_airport=[[Airport.JFK, 0]],
-                travel_date=(base_time + timedelta(days=6)).strftime("%Y-%m-%d"),
-            ),
-        ],
-        stops=MaxStops.ANY,
-        seat_type=SeatType.ECONOMY,
-        sort_by=SortBy.CHEAPEST,
-    )
-
-    def make_result(
-        departure_airport: Airport,
-        arrival_airport: Airport,
-        departure_time: datetime,
-        price: float,
-        flight_number: str,
-    ) -> FlightResult:
-        return FlightResult(
-            price=price,
-            duration=180,
-            stops=0,
-            legs=[
-                FlightLeg(
-                    airline=Airline.AA,
-                    flight_number=flight_number,
-                    departure_airport=departure_airport,
-                    arrival_airport=arrival_airport,
-                    departure_datetime=departure_time,
-                    arrival_datetime=departure_time + timedelta(hours=3),
-                    duration=180,
-                )
-            ],
-        )
-
-    sequence = [
-        [
-            make_result(Airport.JFK, Airport.LAX, base_time, 300.0, "AA300"),
-            make_result(Airport.JFK, Airport.LAX, base_time, 200.0, "AA200"),
-        ],
-        [
-            make_result(Airport.LAX, Airport.SFO, base_time + timedelta(days=3), 450.0, "AA450"),
-            make_result(Airport.LAX, Airport.SFO, base_time + timedelta(days=3), 350.0, "AA350"),
-        ],
-        [
-            make_result(Airport.SFO, Airport.JFK, base_time + timedelta(days=6), 600.0, "AA600"),
-            make_result(Airport.SFO, Airport.JFK, base_time + timedelta(days=6), 500.0, "AA500"),
-        ],
-    ]
-    observed_selected_flights: list[list[FlightResult | None]] = []
-
-    def fake_search_one_way(received_filters):
-        observed_selected_flights.append(
-            [segment.selected_flight for segment in received_filters.flight_segments]
-        )
-        return sequence[len(observed_selected_flights) - 1]
-
-    monkeypatch.setattr(search, "_search_one_way", fake_search_one_way)
-
-    result = search.search_multi_city_native(filters)
-
-    assert result is not None
-    assert result.final_price == 500.0
-    assert result.segment_prices is None
-    assert [step.displayed_price for step in result.step_trace] == [200.0, 350.0, 500.0]
-    assert len(result.completed_itinerary.legs) == 3
-    assert observed_selected_flights[0] == [None, None, None]
-    assert observed_selected_flights[1][0] is not None
-    assert observed_selected_flights[1][1] is None
-    assert observed_selected_flights[2][1] is not None
-
-
 @pytest.mark.parametrize(
     "search_params_fixture",
     [
@@ -525,32 +437,32 @@ class TestParsePrice:
     def test_parse_price_valid_data(self):
         """Test _parse_price with valid price data."""
         data = [None, [[100, 200, 299.99]]]
-        assert SearchFlights._parse_price(data) == 299.99
+        assert parse_price(data) == 299.99
 
     def test_parse_price_empty_inner_list(self):
         """Test _parse_price returns 0.0 when inner price list is empty."""
         data = [None, [[]]]
-        assert SearchFlights._parse_price(data) == 0.0
+        assert parse_price(data) == 0.0
 
     def test_parse_price_empty_outer_list(self):
         """Test _parse_price returns 0.0 when outer price list is empty."""
         data = [None, []]
-        assert SearchFlights._parse_price(data) == 0.0
+        assert parse_price(data) == 0.0
 
     def test_parse_price_none_price_section(self):
         """Test _parse_price returns 0.0 when price section is None."""
         data = [None, None]
-        assert SearchFlights._parse_price(data) == 0.0
+        assert parse_price(data) == 0.0
 
     def test_parse_price_missing_price_section(self):
         """Test _parse_price returns 0.0 when data has no price section."""
         data = [None]
-        assert SearchFlights._parse_price(data) == 0.0
+        assert parse_price(data) == 0.0
 
     def test_parse_price_inner_list_none(self):
         """Test _parse_price returns 0.0 when inner list is None."""
         data = [None, [None]]
-        assert SearchFlights._parse_price(data) == 0.0
+        assert parse_price(data) == 0.0
 
 
 class TestSelectionToken:
@@ -567,13 +479,13 @@ class TestSelectionToken:
         ]
 
         assert (
-            SearchFlights._parse_selection_token(data)
+            parse_selection_token(data)
             == "HZmMMgoYCdJQADYq5QBG----------efg24AAAAAGnKPnMKyPK8A"
         )
 
     def test_parse_selection_token_missing_data(self):
         """Malformed option payloads should not crash token extraction."""
-        assert SearchFlights._parse_selection_token([None, None]) is None
+        assert parse_selection_token([None, None]) is None
 
     def test_selected_flight_serialization_includes_selection_token(self):
         """Stepwise follow-up requests should preserve the opaque selection token."""

@@ -6,7 +6,7 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from fli.core.mcp_params import DateSearchParams, DateSearchSegmentParams
-from fli.models import NativeMultiCityResult, NativeMultiCityStep, TripType
+from fli.models import TripType
 from fli.search import SearchFlights
 
 from . import prompts as _prompts  # noqa: F401
@@ -20,12 +20,12 @@ from .app import (
     mcp,
 )
 from .execution import (
+    _effective_batch_parallelism,
     _execute_date_search,
     _execute_flight_batch,
     _execute_flight_search,
     _serialize_flight_leg,
     _serialize_flight_result,
-    _serialize_native_multi_city_as_flight,
 )
 from .params import (
     FlightSearchParams,
@@ -52,8 +52,6 @@ __all__ = [
     "FlightSearchParams",
     "FlightSearchSegmentParams",
     "FliMCP",
-    "NativeMultiCityResult",
-    "NativeMultiCityStep",
     "PromptSpec",
     "SearchFlights",
     "TripType",
@@ -61,6 +59,7 @@ __all__ = [
     "_build_flight_filters",
     "_build_flight_segments_from_params",
     "_determine_trip_type",
+    "_effective_batch_parallelism",
     "_execute_date_search",
     "_execute_flight_batch",
     "_execute_flight_search",
@@ -68,7 +67,6 @@ __all__ = [
     "_search_flights_from_params",
     "_serialize_flight_leg",
     "_serialize_flight_result",
-    "_serialize_native_multi_city_as_flight",
     "_validate_segment_count",
     "configuration_resource",
     "mcp",

@@ -64,11 +64,15 @@ Add this configuration to your `claude_desktop_config.json`:
 
 Search for exact-date one-way, round-trip, and multi-city itineraries.
 
+Use `search_flights_batch` when you need to rank many exact-date combinations by total trip price
+across a Cartesian product of airport/date choices. `search_dates` is better suited to flexible
+anchor-date scans where later segments are defined relative to the first segment's date.
+
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `segments` | list | Yes | - | Ordered itinerary segments with `origin`, `destination`, and `date` |
+| `segments` | list | Yes | - | Ordered itinerary segments with `origin`, `destination`, and `date`; exact-date multi-city returns direct complete-itinerary results |
 | `cabin_class` | string | No | ECONOMY | ECONOMY, PREMIUM_ECONOMY, BUSINESS, or FIRST |
 | `max_stops` | string | No | ANY | ANY, NON_STOP, ONE_STOP, or TWO_PLUS_STOPS |
 | `departure_window` | string | No | null | Time window in 'HH-HH' format (e.g., '6-20') |

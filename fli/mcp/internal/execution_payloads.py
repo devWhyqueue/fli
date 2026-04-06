@@ -2,6 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any, TypedDict
+
+from fli.core.mcp_params import DateSearchParams, FlightSearchParams
+from fli.models import TripType
+
+
+class DateResultRow(TypedDict):
+    """Summarized row returned by flexible date searches."""
+
+    date: str
+    segment_dates: list[str]
+    price: float
+    currency: str
+    return_date: str | None
+
 
 def flight_error_payload(exc: Exception) -> dict[str, object]:
     """Build a normalized flight-search error payload."""
@@ -36,10 +52,10 @@ def date_failure_payload(results: list[dict[str, object]]) -> dict[str, object]:
 
 
 def date_success_payload(
-    results: list[dict[str, object]],
-    queries: list[tuple[int, object]],
-    params: object,
-    trip_type: object,
+    results: list[dict[str, Any]],
+    queries: Sequence[tuple[int, FlightSearchParams]],
+    params: DateSearchParams,
+    trip_type: TripType,
     max_results: int | None,
     currency: str,
 ) -> dict[str, object]:
@@ -61,26 +77,27 @@ def date_success_payload(
 
 
 def build_date_result(
-    result: dict[str, object],
-    queries: list[tuple[int, object]],
-    trip_type: object,
+    result: dict[str, Any],
+    queries: Sequence[tuple[int, FlightSearchParams]],
+    trip_type: TripType,
     currency: str,
-) -> dict[str, object] | None:
+) -> DateResultRow | None:
     """Build one summarized date-search result row."""
     flights = result["flights"]
     if not flights:
         return None
-    segment_dates = [segment.date for segment in queries[result["index"]][1].segments]
+    index = int(result["index"])
+    segment_dates = [segment.date for segment in queries[index][1].segments]
     return {
         "date": segment_dates[0],
         "segment_dates": segment_dates,
-        "price": min(flight["price"] for flight in flights),
+        "price": min(float(flight["price"]) for flight in flights),
         "currency": currency,
         "return_date": segment_dates[1] if trip_type.name == "ROUND_TRIP" else None,
     }
 
 
-def empty_date_payload(params: object, trip_type_name: str) -> dict[str, object]:
+def empty_date_payload(params: DateSearchParams, trip_type_name: str) -> dict[str, object]:
     """Build the empty-success date-search payload."""
     return {
         "success": True,
@@ -89,4 +106,3 @@ def empty_date_payload(params: object, trip_type_name: str) -> dict[str, object]
         "trip_type": trip_type_name,
         "date_range": f"{params.start_date} to {params.end_date}",
     }
-

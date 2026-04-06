@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from fli.core.parsers import ParseError
-from fli.models import NativeMultiCityResult, TripType
+from fli.models import TripType
 from fli.search import SearchFlights as DefaultSearchFlights
 
 from .app import CONFIG, google_request_params
@@ -22,6 +22,8 @@ from .params import (
     _build_flight_filters,
     _determine_trip_type,
 )
+
+_ROUND_TRIP_BATCH_PARALLELISM_CAP = 3
 
 
 def _serialize_flight_leg(leg: Any) -> dict[str, Any]:
@@ -66,15 +68,6 @@ def _serialize_flight_result(flight: Any, is_round_trip: bool = False) -> dict[s
     return payload
 
 
-def _serialize_native_multi_city_as_flight(result: NativeMultiCityResult) -> dict[str, Any]:
-    """Serialize a native multi-city result into the standard flight payload shape."""
-    payload = _serialize_flight_result(result.completed_itinerary, is_round_trip=False)
-    payload["price"] = result.final_price
-    if result.segment_prices is not None:
-        payload["segment_prices"] = result.segment_prices
-    return payload
-
-
 def _execute_flight_search(params: FlightSearchParams) -> dict[str, Any]:
     """Execute a flight search and return formatted results."""
     try:
@@ -89,9 +82,6 @@ def _execute_flight_search(params: FlightSearchParams) -> dict[str, Any]:
 
 def _collect_flights(search_client: Any, filters: Any, trip_type: TripType) -> list[dict[str, Any]]:
     """Run the requested flight search and normalize the serialized results."""
-    if trip_type == TripType.MULTI_CITY:
-        result = search_client.search_multi_city_native(filters)
-        return [] if result is None else [_serialize_native_multi_city_as_flight(result)]
     raw_flights = search_client.search(filters)
     if not raw_flights:
         return []
@@ -130,8 +120,9 @@ def _execute_flight_batch(
     """Execute batch flight searches with bounded concurrency."""
     if not queries:
         return {"success": True, "results": [], "count": 0, "failed": 0}
+    effective_parallelism = _effective_batch_parallelism(queries, parallelism)
     results: list[dict[str, Any] | None] = [None] * len(queries)
-    with ThreadPoolExecutor(max_workers=parallelism) as executor:
+    with ThreadPoolExecutor(max_workers=effective_parallelism) as executor:
         futures = {
             executor.submit(_execute_flight_search, query): (position, original_index)
             for position, (original_index, query) in enumerate(queries)
@@ -146,8 +137,20 @@ def _execute_flight_batch(
         "results": final_results,
         "count": len(final_results),
         "failed": failures,
-        "parallelism": parallelism,
+        "parallelism": effective_parallelism,
     }
+
+
+def _effective_batch_parallelism(
+    queries: list[tuple[int, FlightSearchParams]],
+    requested_parallelism: int,
+) -> int:
+    """Bound batch concurrency only for query types that fan out upstream."""
+    if not queries:
+        return requested_parallelism
+    if any(_determine_trip_type(query.segments) == TripType.ROUND_TRIP for _, query in queries):
+        return min(requested_parallelism, _ROUND_TRIP_BATCH_PARALLELISM_CAP)
+    return requested_parallelism
 
 
 def _resolve_batch_result(future: Any, original_index: int) -> dict[str, Any]:

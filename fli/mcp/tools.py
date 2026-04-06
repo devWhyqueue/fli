@@ -152,11 +152,13 @@ def search_flights_batch(
 ) -> dict[str, Any]:
     """Run multiple flight searches in one request and return per-item results."""
     valid_queries, precomputed = _validate_batch_queries(queries)
+    effective_parallelism = parallelism
     if valid_queries:
         executed = _execute_flight_batch(valid_queries, parallelism)
+        effective_parallelism = executed["parallelism"]
         for item in executed["results"]:
             precomputed[item["index"]] = item
-    return _batch_payload(precomputed, parallelism)
+    return _batch_payload(precomputed, effective_parallelism)
 
 
 def _validate_batch_queries(

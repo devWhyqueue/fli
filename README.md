@@ -52,11 +52,15 @@ The MCP server exposes three tools:
 | **`search_flights_batch`** | Run many `search_flights` payloads in one call (supports `parallelism`) |
 | **`search_dates`**   | Find the cheapest travel dates across a flexible date range |
 
+For combinatorial exact-date itinerary ranking across many airport/date combinations, prefer
+`search_flights_batch`. Use `search_dates` when you want to scan an anchor date range while later
+segments stay tied to that anchor via `day_offset`.
+
 #### `search_flights` Parameters
 
 | Parameter          | Type   | Description                                         |
 |--------------------|--------|-----------------------------------------------------|
-| `segments`         | list   | Ordered itinerary segments with `origin`, `destination`, and `date`; multi-city is supported directly |
+| `segments`         | list   | Ordered itinerary segments with `origin`, `destination`, and `date`; multi-city is supported directly and returns complete itinerary results |
 | `cabin_class`      | string | ECONOMY, PREMIUM_ECONOMY, BUSINESS, or FIRST        |
 | `max_stops`        | string | ANY, NON_STOP, ONE_STOP, or TWO_PLUS_STOPS          |
 | `departure_window` | string | Deprecated alias for `departure_time_window`         |

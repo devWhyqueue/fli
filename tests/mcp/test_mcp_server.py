@@ -1,12 +1,15 @@
 """Tests for MCP server functionality."""
 
 import asyncio
+import time
 from datetime import datetime, timedelta
 
+import fli.mcp.execution as execution
 import fli.mcp.server as server
 from fli.mcp.server import (
     DateSearchParams,
     FlightSearchParams,
+    _effective_batch_parallelism,
     configuration_resource,
     mcp,
     search_dates,
@@ -56,48 +59,30 @@ class FakeSearchFlights:
                     make_flight(Airport.JFK, Airport.LAX, 450.0),
                 )
             ]
+        if filters.trip_type == server.TripType.MULTI_CITY:
+            return [
+                FlightResult(
+                    price=500.0,
+                    duration=540,
+                    stops=0,
+                    legs=[
+                        *make_flight(Airport.JFK, Airport.LAX, 200.0).legs,
+                        *make_flight(Airport.LAX, Airport.SFO, 350.0).legs,
+                        *make_flight(Airport.SFO, Airport.JFK, 500.0).legs,
+                    ],
+                ),
+                FlightResult(
+                    price=650.0,
+                    duration=600,
+                    stops=1,
+                    legs=[
+                        *make_flight(Airport.JFK, Airport.LAX, 250.0).legs,
+                        *make_flight(Airport.LAX, Airport.SFO, 400.0).legs,
+                        *make_flight(Airport.SFO, Airport.JFK, 650.0).legs,
+                    ],
+                ),
+            ]
         return [make_flight(Airport.JFK, Airport.LHR, 300.0)]
-
-    def search_multi_city_native(self, filters):
-        return server.NativeMultiCityResult(
-            selected_segments=[
-                make_flight(Airport.JFK, Airport.LAX, 200.0),
-                make_flight(Airport.LAX, Airport.SFO, 350.0),
-                make_flight(Airport.SFO, Airport.JFK, 500.0),
-            ],
-            completed_itinerary=FlightResult(
-                price=500.0,
-                duration=540,
-                stops=0,
-                legs=[
-                    *make_flight(Airport.JFK, Airport.LAX, 200.0).legs,
-                    *make_flight(Airport.LAX, Airport.SFO, 350.0).legs,
-                    *make_flight(Airport.SFO, Airport.JFK, 500.0).legs,
-                ],
-            ),
-            final_price=500.0,
-            step_trace=[
-                server.NativeMultiCityStep(
-                    step_index=0,
-                    selected_option_rank=0,
-                    displayed_price=200.0,
-                    legs=make_flight(Airport.JFK, Airport.LAX, 200.0).legs,
-                ),
-                server.NativeMultiCityStep(
-                    step_index=1,
-                    selected_option_rank=0,
-                    displayed_price=350.0,
-                    legs=make_flight(Airport.LAX, Airport.SFO, 350.0).legs,
-                ),
-                server.NativeMultiCityStep(
-                    step_index=2,
-                    selected_option_rank=0,
-                    displayed_price=500.0,
-                    legs=make_flight(Airport.SFO, Airport.JFK, 500.0).legs,
-                ),
-            ],
-            segment_prices=None,
-        )
 
 
 class TestMCPServer:
@@ -183,10 +168,56 @@ class TestMCPServer:
 
         assert result["success"] is True
         assert result["trip_type"] == "MULTI_CITY"
-        assert result["count"] == 1
-        assert len(result["flights"]) == 1
+        assert result["count"] == 2
+        assert len(result["flights"]) == 2
         assert result["flights"][0]["price"] == 500.0
         assert len(result["flights"][0]["legs"]) == 3
+
+    def test_search_flights_multicity_uses_direct_search(self, monkeypatch):
+        """Exact-date multi-city searches should use the direct search path only."""
+
+        class SearchOnlyFake(FakeSearchFlights):
+            def search(self, filters):
+                if filters.trip_type == server.TripType.MULTI_CITY:
+                    return [
+                        FlightResult(
+                            price=420.0,
+                            duration=360,
+                            stops=0,
+                            legs=[
+                                *make_flight(Airport.JFK, Airport.LAX, 120.0).legs,
+                                *make_flight(Airport.LAX, Airport.SFO, 240.0).legs,
+                            ],
+                        )
+                    ]
+                return super().search(filters)
+
+            def __getattr__(self, name):
+                if name == "search_multi_city_native":
+                    raise AssertionError("search_multi_city_native should not be used")
+                raise AttributeError(name)
+
+        monkeypatch.setattr(server, "SearchFlights", SearchOnlyFake)
+        params = FlightSearchParams(
+            segments=[
+                server.FlightSearchSegmentParams(
+                    origin="JFK",
+                    destination="LAX",
+                    date=get_future_date(30),
+                ),
+                server.FlightSearchSegmentParams(
+                    origin="LAX",
+                    destination="SFO",
+                    date=get_future_date(33),
+                ),
+            ]
+        )
+
+        result = search_flights.fn(params)
+
+        assert result["success"] is True
+        assert result["trip_type"] == "MULTI_CITY"
+        assert result["count"] == 1
 
     def test_search_flights_accepts_max_layover_time(self, monkeypatch):
         """search_flights should accept max_layover_time and keep the response shape."""
@@ -281,11 +312,13 @@ class TestMCPServer:
         assert "T" in leg["arrival_time"]
 
     def test_search_flights_multicity_none_result(self, monkeypatch):
-        """search_flights should return an empty list when native multi-city has no result."""
+        """search_flights should return an empty list when direct multi-city search has no result."""
 
         class EmptyMultiCitySearch(FakeSearchFlights):
-            def search_multi_city_native(self, filters):
-                return None
+            def search(self, filters):
+                if filters.trip_type == server.TripType.MULTI_CITY:
+                    return None
+                return super().search(filters)
 
         monkeypatch.setattr(server, "SearchFlights", EmptyMultiCitySearch)
         params = FlightSearchParams(
@@ -467,10 +500,110 @@ class TestMCPServer:
         assert result["results"][0]["index"] == 0
         assert result["results"][1]["index"] == 1
         assert result["results"][1]["trip_type"] == "MULTI_CITY"
-        assert result["results"][1]["count"] == 1
+        assert result["results"][1]["count"] == 2
         assert len(result["results"][1]["flights"][0]["legs"]) == 3
         assert result["results"][2]["index"] == 2
         assert result["count"] == 3
+
+    def test_effective_batch_parallelism_caps_round_trip_queries_only(self):
+        """Only round-trip batches should have reduced parallelism."""
+        one_way = FlightSearchParams(
+            segments=[
+                server.FlightSearchSegmentParams(
+                    origin="JFK",
+                    destination="LHR",
+                    date=get_future_date(30),
+                )
+            ]
+        )
+        multi_city = FlightSearchParams(
+            segments=[
+                server.FlightSearchSegmentParams(
+                    origin="JFK",
+                    destination="LHR",
+                    date=get_future_date(30),
+                ),
+                server.FlightSearchSegmentParams(
+                    origin="LHR",
+                    destination="CDG",
+                    date=get_future_date(33),
+                ),
+                server.FlightSearchSegmentParams(
+                    origin="CDG",
+                    destination="JFK",
+                    date=get_future_date(36),
+                ),
+            ]
+        )
+        round_trip = FlightSearchParams(
+            segments=[
+                server.FlightSearchSegmentParams(
+                    origin="JFK",
+                    destination="LHR",
+                    date=get_future_date(30),
+                ),
+                server.FlightSearchSegmentParams(
+                    origin="LHR",
+                    destination="JFK",
+                    date=get_future_date(37),
+                ),
+            ]
+        )
+
+        assert _effective_batch_parallelism([(0, one_way)], 8) == 8
+        assert _effective_batch_parallelism([(0, multi_city)], 8) == 8
+        assert _effective_batch_parallelism([(0, round_trip)], 8) == 3
+
+    def test_batch_search_handles_100_multi_city_queries_under_parallel_execution(
+        self, monkeypatch
+    ):
+        """Exact-date multi-city batches should retain requested parallelism."""
+
+        def fake_execute_flight_search(params):
+            time.sleep(0.02)
+            return {
+                "success": True,
+                "flights": [{"price": float(len(params.segments)), "legs": []}],
+                "count": 1,
+                "trip_type": server._determine_trip_type(params.segments).name,
+            }
+
+        monkeypatch.setattr(execution, "_execute_flight_search", fake_execute_flight_search)
+        future_date = get_future_date(30)
+        queries = [
+            {
+                "segments": [
+                    {
+                        "origin": "JFK",
+                        "destination": "LAX",
+                        "date": future_date,
+                    },
+                    {
+                        "origin": "LAX",
+                        "destination": "SFO",
+                        "date": get_future_date(33),
+                    },
+                    {
+                        "origin": "SFO",
+                        "destination": "JFK",
+                        "date": get_future_date(36),
+                    },
+                ]
+            }
+            for _ in range(100)
+        ]
+
+        start = time.perf_counter()
+        result = search_flights_batch(queries=queries, parallelism=8)
+        elapsed = time.perf_counter() - start
+
+        assert result["success"] is True
+        assert result["failed"] == 0
+        assert result["count"] == 100
+        assert result["parallelism"] == 8
+        assert result["results"][0]["index"] == 0
+        assert result["results"][-1]["index"] == 99
+        assert elapsed < 1.5
 
     def test_date_search_params_validation(self):
         """Test DateSearchParams validation."""

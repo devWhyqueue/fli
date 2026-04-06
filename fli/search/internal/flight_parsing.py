@@ -62,4 +62,3 @@ def parse_airline(airline_code: str) -> Airline:
 def parse_airport(airport_code: str) -> Airport:
     """Convert airport code to Airport enum."""
     return getattr(Airport, airport_code)
-
