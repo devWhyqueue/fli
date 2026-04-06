@@ -1,8 +1,11 @@
 """Minimal FastMCP shim for environments where importing fastmcp fails."""
 
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, cast, get_type_hints
+
+from pydantic import create_model
 
 
 @dataclass
@@ -26,8 +29,31 @@ class Tool:
             fn=fn,
             name=name or fn.__name__,
             description=description or fn.__doc__,
-            parameters={},
+            parameters=_build_parameters_schema(fn),
         )
+
+
+def _build_parameters_schema(fn: Callable[..., object]) -> dict[str, Any]:
+    """Generate a JSON schema for a tool function signature."""
+    signature = inspect.signature(fn)
+    hints = get_type_hints(fn, include_extras=True)
+    field_definitions: dict[str, Any] = {}
+
+    for parameter in signature.parameters.values():
+        if parameter.kind not in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            continue
+        annotation = hints.get(parameter.name, Any)
+        default = parameter.default if parameter.default is not inspect.Signature.empty else ...
+        field_definitions[parameter.name] = (annotation, default)
+
+    if not field_definitions:
+        return {}
+
+    model = create_model(f"{fn.__name__}_params", **cast(Any, field_definitions))
+    return model.model_json_schema()
 
 
 class _ToolManager:

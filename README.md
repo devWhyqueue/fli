@@ -49,12 +49,17 @@ The MCP server exposes three tools:
 | Tool                 | Description                                                 |
 |----------------------|-------------------------------------------------------------|
 | **`search_flights`** | Search one-way, round-trip, and exact-date multi-city flights |
-| **`search_flights_batch`** | Run many `search_flights` payloads in one call (supports `parallelism`) |
+| **`search_flights_batch`** | Run many exact-date `search_flights` payloads in one call for total-trip ranking (supports `parallelism`) |
 | **`search_dates`**   | Find the cheapest travel dates across a flexible date range |
 
 For combinatorial exact-date itinerary ranking across many airport/date combinations, prefer
 `search_flights_batch`. Use `search_dates` when you want to scan an anchor date range while later
 segments stay tied to that anchor via `day_offset`.
+
+For example, if you need the cheapest complete journey across multiple outbound airports, multiple
+departure dates, multiple onward airports, and a fixed return date, generate every exact-date
+combination, set `num_cabin_luggage` when fare rules matter, call `search_flights_batch` once, and
+rank the returned itineraries by total price.
 
 #### `search_flights` Parameters
 
@@ -72,6 +77,16 @@ segments stay tied to that anchor via `day_offset`.
 | `airlines`         | list   | Filter by airline codes (e.g., ['BA', 'AA'])        |
 | `sort_by`          | string | CHEAPEST, DURATION, DEPARTURE_TIME, or ARRIVAL_TIME |
 | `passengers`       | int    | Number of adult passengers                          |
+
+#### Batch Strategy For Cheapest Complete Journeys
+
+When the goal is "lowest total price across the whole journey" across a Cartesian product of
+airport/date options:
+
+1. Materialize each exact-date itinerary combination as one `search_flights`-shaped query.
+2. Set `num_cabin_luggage=1` if the fare should include one cabin bag / additional hand luggage.
+3. Submit the full list through `search_flights_batch` with an appropriate `parallelism`.
+4. Rank successful results by the itinerary `price`, not by individual leg prices.
 
 #### MCP Prompts and Resources
 

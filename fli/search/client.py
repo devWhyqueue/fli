@@ -16,6 +16,7 @@ from ratelimit import limits, sleep_and_retry
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 _thread_local = threading.local()
+_rate_limit_lock = threading.Lock()
 
 
 class Client:
@@ -37,6 +38,9 @@ class Client:
 
     @sleep_and_retry
     @limits(calls=10, period=1)
+    def _acquire_rate_limit(self) -> None:
+        """Block until the next process-wide request slot is available."""
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(), reraise=True)
     def get(self, url: str, **kwargs: Any) -> requests.Response:
         """Make a rate-limited GET request with automatic retries.
@@ -53,6 +57,8 @@ class Client:
 
         """
         try:
+            with _rate_limit_lock:
+                self._acquire_rate_limit()
             response = self._client.get(url, **kwargs)
             response.raise_for_status()
             return response
@@ -77,6 +83,8 @@ class Client:
 
         """
         try:
+            with _rate_limit_lock:
+                self._acquire_rate_limit()
             response = self._client.post(url, **kwargs)
             response.raise_for_status()
             return response

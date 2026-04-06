@@ -1,6 +1,7 @@
 """Tests for MCP server functionality."""
 
 import asyncio
+import json
 import time
 from datetime import datetime, timedelta
 
@@ -453,47 +454,47 @@ class TestMCPServer:
         future_date = get_future_date(30)
         result = search_flights_batch(
             queries=[
-                {
-                    "segments": [
-                        {
-                            "origin": "JFK",
-                            "destination": "LHR",
-                            "date": future_date,
-                        }
+                FlightSearchParams(
+                    segments=[
+                        server.FlightSearchSegmentParams(
+                            origin="JFK",
+                            destination="LHR",
+                            date=future_date,
+                        )
                     ],
-                    "departure_time_window": "6-20",
-                    "arrival_time_window": "8-22",
-                    "num_cabin_luggage": 1,
-                    "duration": 900,
-                },
-                {
-                    "segments": [
-                        {
-                            "origin": "JFK",
-                            "destination": "LAX",
-                            "date": future_date,
-                        },
-                        {
-                            "origin": "LAX",
-                            "destination": "SFO",
-                            "date": get_future_date(33),
-                        },
-                        {
-                            "origin": "SFO",
-                            "destination": "JFK",
-                            "date": get_future_date(36),
-                        },
+                    departure_time_window="6-20",
+                    arrival_time_window="8-22",
+                    num_cabin_luggage=1,
+                    duration=900,
+                ),
+                FlightSearchParams(
+                    segments=[
+                        server.FlightSearchSegmentParams(
+                            origin="JFK",
+                            destination="LAX",
+                            date=future_date,
+                        ),
+                        server.FlightSearchSegmentParams(
+                            origin="LAX",
+                            destination="SFO",
+                            date=get_future_date(33),
+                        ),
+                        server.FlightSearchSegmentParams(
+                            origin="SFO",
+                            destination="JFK",
+                            date=get_future_date(36),
+                        ),
                     ]
-                },
-                {
-                    "segments": [
-                        {
-                            "origin": "INVALID",
-                            "destination": "LHR",
-                            "date": future_date,
-                        }
+                ),
+                FlightSearchParams(
+                    segments=[
+                        server.FlightSearchSegmentParams(
+                            origin="INVALID",
+                            destination="LHR",
+                            date=future_date,
+                        )
                     ]
-                },
+                ),
             ]
         )
 
@@ -504,6 +505,61 @@ class TestMCPServer:
         assert len(result["results"][1]["flights"][0]["legs"]) == 3
         assert result["results"][2]["index"] == 2
         assert result["count"] == 3
+
+    def test_batch_search_accepts_typed_query_models(self, monkeypatch):
+        """Typed batch items should execute without reshaping the response."""
+        monkeypatch.setattr(server, "SearchFlights", FakeSearchFlights)
+        future_date = get_future_date(30)
+
+        result = search_flights_batch(
+            queries=[
+                FlightSearchParams(
+                    segments=[
+                        server.FlightSearchSegmentParams(
+                            origin="JFK",
+                            destination="LHR",
+                            date=future_date,
+                        )
+                    ],
+                    num_cabin_luggage=1,
+                ),
+                FlightSearchParams(
+                    segments=[
+                        server.FlightSearchSegmentParams(
+                            origin="JFK",
+                            destination="LAX",
+                            date=future_date,
+                        ),
+                        server.FlightSearchSegmentParams(
+                            origin="LAX",
+                            destination="SFO",
+                            date=get_future_date(33),
+                        ),
+                        server.FlightSearchSegmentParams(
+                            origin="SFO",
+                            destination="JFK",
+                            date=get_future_date(36),
+                        ),
+                    ]
+                ),
+            ]
+        )
+
+        assert result["success"] is True
+        assert result["failed"] == 0
+        assert result["count"] == 2
+        assert result["results"][0]["index"] == 0
+        assert result["results"][1]["trip_type"] == "MULTI_CITY"
+
+    def test_search_flights_batch_schema_exposes_nested_query_fields(self):
+        """Batch tool schema should expose FlightSearchParams, not untyped objects."""
+        tools = asyncio.run(mcp.list_tools())
+        batch = next(tool for tool in tools if tool.name == "search_flights_batch")
+
+        serialized_schema = json.dumps(batch.inputSchema)
+        assert "FlightSearchParams" in serialized_schema
+        assert "Num Cabin Luggage" in serialized_schema
+        assert '"additionalProperties": true' not in serialized_schema
 
     def test_effective_batch_parallelism_caps_round_trip_queries_only(self):
         """Only round-trip batches should have reduced parallelism."""
@@ -571,25 +627,25 @@ class TestMCPServer:
         monkeypatch.setattr(execution, "_execute_flight_search", fake_execute_flight_search)
         future_date = get_future_date(30)
         queries = [
-            {
-                "segments": [
-                    {
-                        "origin": "JFK",
-                        "destination": "LAX",
-                        "date": future_date,
-                    },
-                    {
-                        "origin": "LAX",
-                        "destination": "SFO",
-                        "date": get_future_date(33),
-                    },
-                    {
-                        "origin": "SFO",
-                        "destination": "JFK",
-                        "date": get_future_date(36),
-                    },
+            FlightSearchParams(
+                segments=[
+                    server.FlightSearchSegmentParams(
+                        origin="JFK",
+                        destination="LAX",
+                        date=future_date,
+                    ),
+                    server.FlightSearchSegmentParams(
+                        origin="LAX",
+                        destination="SFO",
+                        date=get_future_date(33),
+                    ),
+                    server.FlightSearchSegmentParams(
+                        origin="SFO",
+                        destination="JFK",
+                        date=get_future_date(36),
+                    ),
                 ]
-            }
+            )
             for _ in range(100)
         ]
 
@@ -603,7 +659,81 @@ class TestMCPServer:
         assert result["parallelism"] == 8
         assert result["results"][0]["index"] == 0
         assert result["results"][-1]["index"] == 99
+        assert elapsed < 60
         assert elapsed < 1.5
+
+    def test_batch_search_handles_rome_style_journey_matrix(self, monkeypatch):
+        """Rome-style itinerary matrices should stay in one fast, strongly typed batch."""
+        captured_params: list[FlightSearchParams] = []
+
+        def fake_execute_flight_search(params):
+            captured_params.append(params)
+            first_segment = params.segments[0]
+            second_segment = params.segments[1]
+            return {
+                "success": True,
+                "flights": [
+                    {
+                        "price": float(len(captured_params)),
+                        "legs": [],
+                        "segment_prices": [
+                            {
+                                "origin": first_segment.origin,
+                                "destination": first_segment.destination,
+                            },
+                            {
+                                "origin": second_segment.origin,
+                                "destination": second_segment.destination,
+                            },
+                        ],
+                    }
+                ],
+                "count": 1,
+                "trip_type": server._determine_trip_type(params.segments).name,
+            }
+
+        monkeypatch.setattr(execution, "_execute_flight_search", fake_execute_flight_search)
+        queries = [
+            FlightSearchParams(
+                segments=[
+                    server.FlightSearchSegmentParams(
+                        origin=origin,
+                        destination="FCO",
+                        date=outbound_date,
+                    ),
+                    server.FlightSearchSegmentParams(
+                        origin="FCO",
+                        destination=italy_destination,
+                        date=onward_date,
+                    ),
+                    server.FlightSearchSegmentParams(
+                        origin=italy_destination,
+                        destination="BER",
+                        date="2026-05-18",
+                    ),
+                ],
+                max_stops="ANY",
+                sort_by="CHEAPEST",
+                num_cabin_luggage=1,
+            )
+            for origin in ("DUS", "BER", "HAM", "CGN")
+            for outbound_date in ("2026-05-08", "2026-05-09", "2026-05-10")
+            for italy_destination in ("TRS", "VCE", "TSF")
+            for onward_date in ("2026-05-12", "2026-05-13")
+        ]
+
+        result = search_flights_batch(queries=queries, parallelism=8)
+
+        assert len(queries) == 72
+        assert result["success"] is True
+        assert result["failed"] == 0
+        assert result["count"] == 72
+        assert result["parallelism"] == 8
+        assert len(captured_params) == 72
+        assert all(params.num_cabin_luggage == 1 for params in captured_params)
+        assert all(server._determine_trip_type(params.segments) == server.TripType.MULTI_CITY for params in captured_params)
+        assert result["results"][0]["index"] == 0
+        assert result["results"][-1]["index"] == 71
 
     def test_date_search_params_validation(self):
         """Test DateSearchParams validation."""

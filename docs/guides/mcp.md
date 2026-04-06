@@ -68,6 +68,10 @@ Use `search_flights_batch` when you need to rank many exact-date combinations by
 across a Cartesian product of airport/date choices. `search_dates` is better suited to flexible
 anchor-date scans where later segments are defined relative to the first segment's date.
 
+For complete-journey optimization across several airport/date options, build one exact-date
+multi-city query per combination, include `num_cabin_luggage` when cabin-bag fares matter, submit
+them through `search_flights_batch`, and rank the returned itineraries by total `price`.
+
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |

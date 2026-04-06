@@ -142,15 +142,21 @@ search_flights.fn = _search_flights_from_params  # type: ignore[attr-defined]
 )
 def search_flights_batch(
     queries: Annotated[
-        list[dict[str, Any]],
-        Field(description="List of flight-search query objects matching search_flights inputs"),
+        list[FlightSearchParams],
+        Field(
+            description=(
+                "List of exact-date flight-search payloads matching search_flights inputs. "
+                "Use this for Cartesian-product itinerary ranking across airport/date options "
+                "when you need the cheapest complete journey by total price."
+            )
+        ),
     ],
     parallelism: Annotated[
         int,
         Field(description="Max number of concurrent searches", ge=1, le=32),
     ] = 4,
 ) -> dict[str, Any]:
-    """Run multiple flight searches in one request and return per-item results."""
+    """Run multiple exact-date flight searches in one request and return per-item results."""
     valid_queries, precomputed = _validate_batch_queries(queries)
     effective_parallelism = parallelism
     if valid_queries:
@@ -162,14 +168,14 @@ def search_flights_batch(
 
 
 def _validate_batch_queries(
-    queries: list[dict[str, Any]],
+    queries: list[FlightSearchParams],
 ) -> tuple[list[tuple[int, FlightSearchParams]], list[dict[str, Any] | None]]:
-    """Validate raw batch query payloads."""
+    """Validate typed batch query payloads."""
     valid_queries: list[tuple[int, FlightSearchParams]] = []
     precomputed: list[dict[str, Any] | None] = [None] * len(queries)
     for index, query in enumerate(queries):
         try:
-            valid_queries.append((index, FlightSearchParams(**query)))
+            valid_queries.append((index, query))
         except Exception as exc:
             precomputed[index] = {
                 "index": index,

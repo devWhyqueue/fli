@@ -6,7 +6,9 @@ with Google Flights' API to find available flights and their details.
 
 import json
 from copy import deepcopy
-from typing import cast
+from typing import Any, cast
+
+from curl_cffi.requests import Response
 
 from fli.models import (
     FlightResult,
@@ -17,6 +19,18 @@ from fli.search.client import get_client
 from fli.search.internal.flight_parsing import (
     parse_flights_data,
 )
+
+
+class _ClientProxy:
+    """Delegate request calls to the current thread's shared HTTP client."""
+
+    def get(self, *args: Any, **kwargs: Any) -> Response:
+        """Forward GET requests to the active thread-local client."""
+        return get_client().get(*args, **kwargs)
+
+    def post(self, *args: Any, **kwargs: Any) -> Response:
+        """Forward POST requests to the active thread-local client."""
+        return get_client().post(*args, **kwargs)
 
 
 class SearchFlights:
@@ -33,7 +47,7 @@ class SearchFlights:
 
     def __init__(self, *, request_params: dict[str, str] | None = None):
         """Initialize the search client for flight searches."""
-        self.client = get_client()
+        self.client = _ClientProxy()
         self.request_params = request_params or {}
 
     def search(
