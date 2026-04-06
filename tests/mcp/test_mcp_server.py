@@ -46,6 +46,13 @@ def make_flight(departure_airport: Airport, arrival_airport: Airport, price: flo
     )
 
 
+_FAKE_ONE_WAY_PRICES: dict[tuple[Airport, Airport], list[float]] = {
+    (Airport.JFK, Airport.LAX): [200.0, 250.0],
+    (Airport.LAX, Airport.SFO): [150.0, 200.0],
+    (Airport.SFO, Airport.JFK): [150.0, 200.0],
+}
+
+
 class FakeSearchFlights:
     """Deterministic search stub for MCP tests."""
 
@@ -60,30 +67,10 @@ class FakeSearchFlights:
                     make_flight(Airport.JFK, Airport.LAX, 450.0),
                 )
             ]
-        if filters.trip_type == server.TripType.MULTI_CITY:
-            return [
-                FlightResult(
-                    price=500.0,
-                    duration=540,
-                    stops=0,
-                    legs=[
-                        *make_flight(Airport.JFK, Airport.LAX, 200.0).legs,
-                        *make_flight(Airport.LAX, Airport.SFO, 350.0).legs,
-                        *make_flight(Airport.SFO, Airport.JFK, 500.0).legs,
-                    ],
-                ),
-                FlightResult(
-                    price=650.0,
-                    duration=600,
-                    stops=1,
-                    legs=[
-                        *make_flight(Airport.JFK, Airport.LAX, 250.0).legs,
-                        *make_flight(Airport.LAX, Airport.SFO, 400.0).legs,
-                        *make_flight(Airport.SFO, Airport.JFK, 650.0).legs,
-                    ],
-                ),
-            ]
-        return [make_flight(Airport.JFK, Airport.LHR, 300.0)]
+        dep = filters.flight_segments[0].departure_airport[0][0]
+        arr = filters.flight_segments[0].arrival_airport[0][0]
+        prices = _FAKE_ONE_WAY_PRICES.get((dep, arr), [300.0])
+        return [make_flight(dep, arr, p) for p in prices]
 
 
 class TestMCPServer:
@@ -143,7 +130,7 @@ class TestMCPServer:
         assert len(result["flights"][0]["legs"]) == 2
 
     def test_search_flights_multicity(self, monkeypatch):
-        """search_flights should normalize exact-date multi-city results."""
+        """Multi-city searches decompose into one-way legs and recombine."""
         monkeypatch.setattr(server, "SearchFlights", FakeSearchFlights)
         params = FlightSearchParams(
             segments=[
@@ -169,36 +156,21 @@ class TestMCPServer:
 
         assert result["success"] is True
         assert result["trip_type"] == "MULTI_CITY"
-        assert result["count"] == 2
-        assert len(result["flights"]) == 2
+        assert result["count"] == 8
         assert result["flights"][0]["price"] == 500.0
+        assert result["flights"][0]["segment_prices"] == [200.0, 150.0, 150.0]
         assert len(result["flights"][0]["legs"]) == 3
 
-    def test_search_flights_multicity_uses_direct_search(self, monkeypatch):
-        """Exact-date multi-city searches should use the direct search path only."""
+    def test_search_flights_multicity_decomposes_into_one_way_legs(self, monkeypatch):
+        """Multi-city searches should decompose into one-way leg queries, not call Google multi-city."""
+        searched_trip_types: list[str] = []
 
-        class SearchOnlyFake(FakeSearchFlights):
+        class TrackingFake(FakeSearchFlights):
             def search(self, filters):
-                if filters.trip_type == server.TripType.MULTI_CITY:
-                    return [
-                        FlightResult(
-                            price=420.0,
-                            duration=360,
-                            stops=0,
-                            legs=[
-                                *make_flight(Airport.JFK, Airport.LAX, 120.0).legs,
-                                *make_flight(Airport.LAX, Airport.SFO, 240.0).legs,
-                            ],
-                        )
-                    ]
+                searched_trip_types.append(filters.trip_type.name)
                 return super().search(filters)
 
-            def __getattr__(self, name):
-                if name == "search_multi_city_native":
-                    raise AssertionError("search_multi_city_native should not be used")
-                raise AttributeError(name)
-
-        monkeypatch.setattr(server, "SearchFlights", SearchOnlyFake)
+        monkeypatch.setattr(server, "SearchFlights", TrackingFake)
         params = FlightSearchParams(
             segments=[
                 server.FlightSearchSegmentParams(
@@ -218,7 +190,8 @@ class TestMCPServer:
 
         assert result["success"] is True
         assert result["trip_type"] == "MULTI_CITY"
-        assert result["count"] == 1
+        assert all(t == "ONE_WAY" for t in searched_trip_types)
+        assert len(searched_trip_types) == 2
 
     def test_search_flights_accepts_max_layover_time(self, monkeypatch):
         """search_flights should accept max_layover_time and keep the response shape."""
@@ -313,15 +286,17 @@ class TestMCPServer:
         assert "T" in leg["arrival_time"]
 
     def test_search_flights_multicity_none_result(self, monkeypatch):
-        """search_flights should return an empty list when direct multi-city search has no result."""
+        """Empty result on any segment yields an empty combined result."""
 
-        class EmptyMultiCitySearch(FakeSearchFlights):
+        class EmptySegmentSearch(FakeSearchFlights):
             def search(self, filters):
-                if filters.trip_type == server.TripType.MULTI_CITY:
+                dep = filters.flight_segments[0].departure_airport[0][0]
+                arr = filters.flight_segments[0].arrival_airport[0][0]
+                if dep == Airport.LAX and arr == Airport.SFO:
                     return None
                 return super().search(filters)
 
-        monkeypatch.setattr(server, "SearchFlights", EmptyMultiCitySearch)
+        monkeypatch.setattr(server, "SearchFlights", EmptySegmentSearch)
         params = FlightSearchParams(
             segments=[
                 server.FlightSearchSegmentParams(
@@ -501,8 +476,9 @@ class TestMCPServer:
         assert result["results"][0]["index"] == 0
         assert result["results"][1]["index"] == 1
         assert result["results"][1]["trip_type"] == "MULTI_CITY"
-        assert result["results"][1]["count"] == 2
+        assert result["results"][1]["count"] == 8
         assert len(result["results"][1]["flights"][0]["legs"]) == 3
+        assert result["results"][1]["flights"][0]["segment_prices"] == [200.0, 150.0, 150.0]
         assert result["results"][2]["index"] == 2
         assert result["count"] == 3
 

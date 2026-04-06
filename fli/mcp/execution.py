@@ -15,6 +15,7 @@ from .internal.execution_payloads import (
     flight_error_payload,
     success_payload,
 )
+from .internal.multicity import execute_multicity_decomposed
 from .params import (
     DateSearchParams,
     FlightSearchParams,
@@ -72,6 +73,13 @@ def _execute_flight_search(params: FlightSearchParams) -> dict[str, Any]:
     """Execute a flight search and return formatted results."""
     try:
         filters, trip_type = _build_flight_filters(params)
+        if trip_type == TripType.MULTI_CITY:
+            return execute_multicity_decomposed(
+                params,
+                trip_type,
+                search_client_factory=_search_flights_client,
+                collect_flights_fn=_collect_flights,
+            )
         flights = _collect_flights(_search_flights_client(), filters, trip_type)
         return success_payload(flights, trip_type.name, CONFIG.max_results)
     except ParseError as exc:
