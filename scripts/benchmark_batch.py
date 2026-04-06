@@ -1,109 +1,116 @@
-"""Benchmark batch flight-search throughput.
+"""Benchmark internal exact-date execution strategies.
 
 Usage:
-    uv run python scripts/benchmark_batch.py --count 100 --parallelism 1
+    uv run python scripts/benchmark_batch.py --count 100 --parallelism 8 --strategy compare
 """
 
 from __future__ import annotations
 
 import argparse
-import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 
-from fli.models import Airport, FlightSearchFilters, FlightSegment, PassengerInfo, TripType
-from fli.search import SearchFlights
-
-logger = logging.getLogger(__name__)
+from fli.mcp.execution import _execute_flight_batch, _execute_flight_search
+from fli.mcp.server import FlightSearchParams, FlightSearchSegmentParams
 
 
-def build_one_way_filters(departure_date: str) -> FlightSearchFilters:
-    """Create a reusable one-way filter payload for benchmarking."""
-    return FlightSearchFilters(
-        trip_type=TripType.ONE_WAY,
-        passenger_info=PassengerInfo(adults=1),
-        flight_segments=[
-            FlightSegment(
-                departure_airport=[[Airport.BER, 0]],
-                arrival_airport=[[Airport.LHR, 0]],
-                travel_date=departure_date,
+def build_queries(count: int, departure_date: str, mode: str) -> list[FlightSearchParams]:
+    """Create concrete exact-date query payloads for benchmarking."""
+    if mode == "multi-city":
+        anchor = datetime.strptime(departure_date, "%Y-%m-%d").date()
+        onward_date = (anchor + timedelta(days=4)).isoformat()
+        return_date = (anchor + timedelta(days=10)).isoformat()
+        return [
+            FlightSearchParams(
+                segments=[
+                    FlightSearchSegmentParams(
+                        origin="BER",
+                        destination="FCO",
+                        date=departure_date,
+                    ),
+                    FlightSearchSegmentParams(
+                        origin="FCO",
+                        destination="VCE",
+                        date=onward_date,
+                    ),
+                    FlightSearchSegmentParams(
+                        origin="VCE",
+                        destination="BER",
+                        date=return_date,
+                    ),
+                ],
+                num_cabin_luggage=1,
             )
-        ],
-    )
+            for _ in range(count)
+        ]
+    return [
+        FlightSearchParams(
+            segments=[
+                FlightSearchSegmentParams(
+                    origin="BER",
+                    destination="LHR",
+                    date=departure_date,
+                )
+            ]
+        )
+        for _ in range(count)
+    ]
 
 
-def build_multi_city_filters(departure_date: str) -> FlightSearchFilters:
-    """Create a reusable multi-city filter payload for benchmarking."""
-    return FlightSearchFilters(
-        trip_type=TripType.MULTI_CITY,
-        passenger_info=PassengerInfo(adults=1, num_cabin_luggage=1),
-        flight_segments=[
-            FlightSegment(
-                departure_airport=[[Airport.BER, 0]],
-                arrival_airport=[[Airport.FCO, 0]],
-                travel_date=departure_date,
-            ),
-            FlightSegment(
-                departure_airport=[[Airport.FCO, 0]],
-                arrival_airport=[[Airport.VCE, 0]],
-                travel_date="2026-05-12",
-            ),
-            FlightSegment(
-                departure_airport=[[Airport.VCE, 0]],
-                arrival_airport=[[Airport.BER, 0]],
-                travel_date="2026-05-18",
-            ),
-        ],
-    )
+def run_sequential(queries: list[FlightSearchParams]) -> dict[str, float | int]:
+    """Run exact-date searches one by one."""
+    start = time.perf_counter()
+    successes = sum(int(bool(_execute_flight_search(query).get("flights"))) for query in queries)
+    elapsed = time.perf_counter() - start
+    return {
+        "elapsed_seconds": round(elapsed, 2),
+        "successes": successes,
+    }
 
 
-def run_one(search: SearchFlights, filters: FlightSearchFilters) -> bool:
-    """Execute one search request and return whether results were found."""
-    flights = search.search(filters)
-    return bool(flights)
+def run_batched(
+    queries: list[FlightSearchParams],
+    parallelism: int,
+) -> dict[str, float | int]:
+    """Run exact-date searches through the internal batch executor."""
+    start = time.perf_counter()
+    result = _execute_flight_batch(list(enumerate(queries)), parallelism)
+    elapsed = time.perf_counter() - start
+    return {
+        "elapsed_seconds": round(elapsed, 2),
+        "successes": sum(int(bool(item.get("flights"))) for item in result["results"]),
+        "effective_parallelism": result["parallelism"],
+    }
 
 
 def main() -> None:
     """Run benchmark and print a compact result dictionary."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--count", type=int, default=100)
-    parser.add_argument("--parallelism", type=int, default=1)
+    parser.add_argument("--parallelism", type=int, default=8)
     parser.add_argument("--departure-date", type=str, default="2026-06-11")
+    parser.add_argument("--mode", choices=("one-way", "multi-city"), default="one-way")
     parser.add_argument(
-        "--mode",
-        choices=("one-way", "multi-city"),
-        default="one-way",
+        "--strategy",
+        choices=("sequential", "batched", "compare"),
+        default="compare",
     )
     args = parser.parse_args()
 
-    search = SearchFlights()
-    filters = (
-        build_multi_city_filters(args.departure_date)
-        if args.mode == "multi-city"
-        else build_one_way_filters(args.departure_date)
-    )
-    start = time.perf_counter()
-    successes = 0
+    queries = build_queries(args.count, args.departure_date, args.mode)
+    result: dict[str, object] = {
+        "count": args.count,
+        "parallelism": args.parallelism,
+        "mode": args.mode,
+        "strategy": args.strategy,
+    }
 
-    if args.parallelism <= 1:
-        for _ in range(args.count):
-            successes += int(run_one(search, filters))
-    else:
-        with ThreadPoolExecutor(max_workers=args.parallelism) as executor:
-            futures = [executor.submit(run_one, search, filters) for _ in range(args.count)]
-            for future in as_completed(futures):
-                successes += int(future.result())
+    if args.strategy in {"sequential", "compare"}:
+        result["sequential"] = run_sequential(queries)
+    if args.strategy in {"batched", "compare"}:
+        result["batched"] = run_batched(queries, args.parallelism)
 
-    elapsed = time.perf_counter() - start
-    print(
-        {
-            "count": args.count,
-            "parallelism": args.parallelism,
-            "mode": args.mode,
-            "elapsed_seconds": round(elapsed, 2),
-            "successes": successes,
-        }
-    )
+    print(result)
 
 
 if __name__ == "__main__":

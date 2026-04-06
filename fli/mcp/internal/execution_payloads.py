@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, TypedDict
 
-from fli.core.mcp_params import DateSearchParams, FlightSearchParams
+from fli.core.mcp_params import DateSearchParams, FlightSearchParams, JourneySearchParams
 from fli.models import TripType
 
 
@@ -17,6 +17,19 @@ class DateResultRow(TypedDict):
     price: float
     currency: str
     return_date: str | None
+
+
+class JourneyResultRow(TypedDict):
+    """Ranked row returned by exact-date journey matrix searches."""
+
+    price: float
+    currency: str
+    legs: list[dict[str, object]]
+    segment_prices: list[float] | None
+    trip_type: str
+    selected_segments: list[dict[str, str]]
+    stop_count: int
+    travel_time_minutes: int
 
 
 def flight_error_payload(exc: Exception) -> dict[str, object]:
@@ -76,6 +89,45 @@ def date_success_payload(
     }
 
 
+def journey_failure_payload(results: list[dict[str, object]]) -> dict[str, object]:
+    """Build a normalized journey-search failure payload."""
+    error_result = next((item for item in results if not item.get("success", False)), None)
+    error = (
+        error_result.get("error", "Journey search failed")
+        if error_result
+        else "Journey search failed"
+    )
+    return {"success": False, "error": error, "journeys": []}
+
+
+def journey_success_payload(
+    results: list[dict[str, Any]],
+    queries: Sequence[tuple[int, FlightSearchParams]],
+    params: JourneySearchParams,
+    skipped_combinations: int,
+    max_results: int | None,
+    currency: str,
+) -> dict[str, object]:
+    """Build a ranked journey-search payload from executed exact-date queries."""
+    journeys = [build_journey_results(result, queries, currency) for result in results]
+    flattened = [journey for group in journeys for journey in group]
+    flattened.sort(key=lambda item: (item["price"], item["travel_time_minutes"]))
+    limit = min(max_results or params.top_n, params.top_n)
+    limited_results = flattened[:limit]
+    failed = sum(1 for item in results if not item.get("success", False))
+    return {
+        "success": failed == 0,
+        "journeys": limited_results,
+        "count": len(limited_results),
+        "combination_count": len(queries),
+        "evaluated_combinations": len(queries),
+        "combinations_with_results": sum(1 for item in results if item.get("flights")),
+        "failed_combinations": failed,
+        "skipped_combinations": skipped_combinations,
+        "top_n": params.top_n,
+    }
+
+
 def build_date_result(
     result: dict[str, Any],
     queries: Sequence[tuple[int, FlightSearchParams]],
@@ -95,6 +147,42 @@ def build_date_result(
         "currency": currency,
         "return_date": segment_dates[1] if trip_type.name == "ROUND_TRIP" else None,
     }
+
+
+def build_journey_results(
+    result: dict[str, Any],
+    queries: Sequence[tuple[int, FlightSearchParams]],
+    currency: str,
+) -> list[JourneyResultRow]:
+    """Build ranked journey rows for one concrete exact-date query."""
+    flights = result["flights"]
+    if not flights:
+        return []
+    index = int(result["index"])
+    selected_segments = [
+        {
+            "origin": segment.origin,
+            "destination": segment.destination,
+            "date": segment.date,
+        }
+        for segment in queries[index][1].segments
+    ]
+    rows: list[JourneyResultRow] = []
+    for flight in flights:
+        legs = flight["legs"]
+        rows.append(
+            {
+                "price": float(flight["price"]),
+                "currency": currency,
+                "legs": legs,
+                "segment_prices": flight.get("segment_prices"),
+                "trip_type": result.get("trip_type", "ONE_WAY"),
+                "selected_segments": selected_segments,
+                "stop_count": max(0, len(legs) - len(selected_segments)),
+                "travel_time_minutes": sum(int(leg["duration"]) for leg in legs),
+            }
+        )
+    return rows
 
 
 def empty_date_payload(params: DateSearchParams, trip_type_name: str) -> dict[str, object]:

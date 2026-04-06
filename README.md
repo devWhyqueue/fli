@@ -49,17 +49,17 @@ The MCP server exposes three tools:
 | Tool                 | Description                                                 |
 |----------------------|-------------------------------------------------------------|
 | **`search_flights`** | Search one-way, round-trip, and exact-date multi-city flights |
-| **`search_flights_batch`** | Run many exact-date `search_flights` payloads in one call for total-trip ranking (supports `parallelism`) |
+| **`search_journey_matrix`** | Search exact-date airport/date option sets and rank the cheapest complete journeys |
 | **`search_dates`**   | Find the cheapest travel dates across a flexible date range |
 
 For combinatorial exact-date itinerary ranking across many airport/date combinations, prefer
-`search_flights_batch`. Use `search_dates` when you want to scan an anchor date range while later
+`search_journey_matrix`. Use `search_dates` when you want to scan an anchor date range while later
 segments stay tied to that anchor via `day_offset`.
 
 For example, if you need the cheapest complete journey across multiple outbound airports, multiple
 departure dates, multiple onward airports, and a fixed return date, generate every exact-date
-combination, set `num_cabin_luggage` when fare rules matter, call `search_flights_batch` once, and
-rank the returned itineraries by total price.
+combination implicitly with `search_journey_matrix`, set `num_cabin_luggage` when fare rules
+matter, and rank the returned itineraries by total price.
 
 #### `search_flights` Parameters
 
@@ -78,15 +78,26 @@ rank the returned itineraries by total price.
 | `sort_by`          | string | CHEAPEST, DURATION, DEPARTURE_TIME, or ARRIVAL_TIME |
 | `passengers`       | int    | Number of adult passengers                          |
 
-#### Batch Strategy For Cheapest Complete Journeys
+#### `search_journey_matrix` Parameters
 
 When the goal is "lowest total price across the whole journey" across a Cartesian product of
 airport/date options:
 
-1. Materialize each exact-date itinerary combination as one `search_flights`-shaped query.
-2. Set `num_cabin_luggage=1` if the fare should include one cabin bag / additional hand luggage.
-3. Submit the full list through `search_flights_batch` with an appropriate `parallelism`.
-4. Rank successful results by the itinerary `price`, not by individual leg prices.
+| Parameter          | Type   | Description                                         |
+|--------------------|--------|-----------------------------------------------------|
+| `segments`         | list   | Ordered itinerary segments where `origin`, `destination`, and `date` each accept one or many exact options |
+| `cabin_class`      | string | ECONOMY, PREMIUM_ECONOMY, BUSINESS, or FIRST        |
+| `max_stops`        | string | ANY, NON_STOP, ONE_STOP, or TWO_PLUS_STOPS          |
+| `departure_window` | string | Deprecated alias for `departure_time_window`         |
+| `departure_time_window` | string | Departure window in 'HH-HH' format (e.g., '6-20') |
+| `arrival_time_window` | string | Arrival window in 'HH-HH' format (e.g., '8-22')    |
+| `duration`         | int    | Maximum itinerary duration in minutes                |
+| `max_layover_time`| int    | Maximum layover duration in minutes within each segment |
+| `num_cabin_luggage`| int    | Cabin baggage count for pricing/filtering            |
+| `airlines`         | list   | Filter by airline codes (e.g., ['BA', 'AA'])        |
+| `sort_by`          | string | Underlying exact-date search sort: CHEAPEST, DURATION, DEPARTURE_TIME, or ARRIVAL_TIME |
+| `passengers`       | int    | Number of adult passengers                          |
+| `top_n`            | int    | Number of cheapest complete journeys to return      |
 
 #### MCP Prompts and Resources
 

@@ -4,10 +4,15 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from fli.core.mcp_params import FlightSearchParams, FlightSearchSegmentParams
+from fli.core.mcp_params import (
+    FlightSearchParams,
+    FlightSearchSegmentParams,
+    JourneySearchParams,
+    JourneySearchSegmentParams,
+)
 
 from .app import CONFIG, mcp
-from .execution import _execute_flight_batch, _execute_flight_search
+from .execution import _execute_flight_batch, _execute_flight_search, _execute_journey_search
 
 
 @mcp.tool(
@@ -133,30 +138,117 @@ search_flights.fn = _search_flights_from_params  # type: ignore[attr-defined]
 
 
 @mcp.tool(
-    name="search_flights_batch",
+    name="search_journey_matrix",
     annotations={
-        "title": "Search Flights Batch",
+        "title": "Search Journey Matrix",
         "readOnlyHint": True,
         "idempotentHint": True,
     },
 )
-def search_flights_batch(
-    queries: Annotated[
-        list[FlightSearchParams],
+def search_journey_matrix(
+    segments: Annotated[
+        list[JourneySearchSegmentParams],
         Field(
             description=(
-                "List of exact-date flight-search payloads matching search_flights inputs. "
-                "Use this for Cartesian-product itinerary ranking across airport/date options "
-                "when you need the cheapest complete journey by total price."
+                "Ordered itinerary segments where origin, destination, and date may each "
+                "be a single value or a list of exact options. Use this when you want the "
+                "server to materialize and rank complete exact-date journey combinations."
             )
         ),
     ],
-    parallelism: Annotated[
+    departure_window: Annotated[
+        str | None,
+        Field(description="Deprecated alias for departure_time_window in 'HH-HH' format"),
+    ] = None,
+    departure_time_window: Annotated[
+        str | None,
+        Field(description="Departure time window in 'HH-HH' 24h format (e.g., '6-20')"),
+    ] = None,
+    arrival_time_window: Annotated[
+        str | None,
+        Field(description="Arrival time window in 'HH-HH' 24h format (e.g., '8-22')"),
+    ] = None,
+    airlines: Annotated[
+        list[str] | None,
+        Field(description="Filter by airline IATA codes (e.g., ['BA', 'AA'])"),
+    ] = None,
+    cabin_class: Annotated[
+        str,
+        Field(description="Cabin class: ECONOMY, PREMIUM_ECONOMY, BUSINESS, FIRST"),
+    ] = CONFIG.default_cabin_class,
+    max_stops: Annotated[
+        str,
+        Field(description="Maximum stops: ANY, NON_STOP, ONE_STOP, TWO_PLUS_STOPS"),
+    ] = "ANY",
+    sort_by: Annotated[
+        str,
+        Field(
+            description=(
+                "Sort the underlying exact-date searches by CHEAPEST, DURATION, "
+                "DEPARTURE_TIME, or ARRIVAL_TIME"
+            )
+        ),
+    ] = CONFIG.default_sort_by,
+    passengers: Annotated[
+        int | None,
+        Field(description="Number of adult passengers", ge=1),
+    ] = None,
+    num_cabin_luggage: Annotated[
+        int | None,
+        Field(description="Number of cabin luggage pieces to include in fare", ge=0, le=2),
+    ] = None,
+    duration: Annotated[
+        int | None,
+        Field(description="Maximum itinerary duration in minutes", ge=1),
+    ] = None,
+    max_layover_time: Annotated[
+        int | None,
+        Field(
+            description="Maximum layover duration in minutes within each searched segment",
+            ge=1,
+        ),
+    ] = None,
+    top_n: Annotated[
         int,
-        Field(description="Max number of concurrent searches", ge=1, le=32),
-    ] = 4,
+        Field(description="Number of cheapest complete journeys to return", ge=1),
+    ] = 10,
 ) -> dict[str, Any]:
-    """Run multiple exact-date flight searches in one request and return per-item results."""
+    """Find the cheapest exact-date complete journeys across airport/date option sets."""
+    effective_departure_window = (
+        departure_time_window or departure_window or CONFIG.default_departure_window
+    )
+    return _execute_journey_search(
+        JourneySearchParams(
+            segments=segments,
+            departure_window=departure_window,
+            departure_time_window=effective_departure_window,
+            arrival_time_window=arrival_time_window,
+            airlines=airlines,
+            cabin_class=cabin_class,
+            max_stops=max_stops,
+            sort_by=sort_by,
+            passengers=passengers or CONFIG.default_passengers,
+            num_cabin_luggage=num_cabin_luggage,
+            duration=duration,
+            max_layover_time=max_layover_time,
+            top_n=top_n,
+        )
+    )
+
+
+def _search_journey_from_params(params: JourneySearchParams) -> dict[str, Any]:
+    """Compatibility wrapper for tests expecting the params-based signature."""
+    return _execute_journey_search(params)
+
+
+search_journey_matrix.fn = _search_journey_from_params  # type: ignore[attr-defined]
+
+
+def _search_flights_batch(
+    queries: list[FlightSearchParams],
+    parallelism: int = 4,
+) -> dict[str, Any]:
+    """Execute many concrete exact-date flight searches through the internal batch runner."""
     valid_queries, precomputed = _validate_batch_queries(queries)
     effective_parallelism = parallelism
     if valid_queries:

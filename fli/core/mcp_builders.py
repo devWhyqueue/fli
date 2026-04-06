@@ -2,6 +2,7 @@
 
 from collections.abc import Sequence
 from datetime import date, datetime, timedelta
+from itertools import product
 from typing import Any
 
 from fli.core import (
@@ -25,6 +26,9 @@ from .mcp_models import (
     DateSearchSegmentParams,
     FlightSearchParams,
     FlightSearchSegmentParams,
+    JourneySearchParams,
+    JourneySearchSegmentParams,
+    _coerce_to_list,
     _validate_segment_count,
 )
 
@@ -115,6 +119,46 @@ def _build_date_search_queries(params: DateSearchParams) -> list[tuple[int, Flig
     ]
 
 
+def _build_journey_search_queries(
+    params: JourneySearchParams,
+) -> tuple[list[tuple[int, FlightSearchParams]], int]:
+    """Materialize exact-date journey combinations into concrete flight searches."""
+    concrete_segments = [
+        _materialize_journey_segment_options(segment) for segment in params.segments
+    ]
+    valid_queries: list[tuple[int, FlightSearchParams]] = []
+    skipped = 0
+
+    for combo in product(*concrete_segments):
+        if not _segments_form_continuous_journey(combo):
+            skipped += 1
+            continue
+        try:
+            valid_queries.append(
+                (
+                    len(valid_queries),
+                    FlightSearchParams(
+                        segments=list(combo),
+                        departure_window=params.departure_window,
+                        departure_time_window=params.departure_time_window,
+                        arrival_time_window=params.arrival_time_window,
+                        airlines=params.airlines,
+                        cabin_class=params.cabin_class,
+                        max_stops=params.max_stops,
+                        sort_by=params.sort_by,
+                        passengers=params.passengers,
+                        num_cabin_luggage=params.num_cabin_luggage,
+                        duration=params.duration,
+                        max_layover_time=params.max_layover_time,
+                    ),
+                )
+            )
+        except ValueError:
+            skipped += 1
+
+    return valid_queries, skipped
+
+
 def _build_date_search_query(
     index: int,
     anchor_date: date,
@@ -137,6 +181,30 @@ def _build_date_search_query(
             duration=None,
             max_layover_time=None,
         ),
+    )
+
+
+def _materialize_journey_segment_options(
+    segment: JourneySearchSegmentParams,
+) -> list[FlightSearchSegmentParams]:
+    """Expand one journey-search segment into concrete exact-date segment options."""
+    return [
+        FlightSearchSegmentParams(origin=origin, destination=destination, date=date)
+        for origin, destination, date in product(
+            _coerce_to_list(segment.origin),
+            _coerce_to_list(segment.destination),
+            _coerce_to_list(segment.date),
+        )
+    ]
+
+
+def _segments_form_continuous_journey(
+    segments: Sequence[FlightSearchSegmentParams],
+) -> bool:
+    """Return whether consecutive segments connect into one continuous journey."""
+    return all(
+        previous.destination == current.origin
+        for previous, current in zip(segments, segments[1:], strict=False)
     )
 
 

@@ -13,14 +13,18 @@ from .internal.execution_payloads import (
     date_failure_payload,
     date_success_payload,
     flight_error_payload,
+    journey_failure_payload,
+    journey_success_payload,
     success_payload,
 )
 from .internal.multicity import execute_multicity_decomposed
 from .params import (
     DateSearchParams,
     FlightSearchParams,
+    JourneySearchParams,
     _build_date_search_queries,
     _build_flight_filters,
+    _build_journey_search_queries,
     _determine_trip_type,
 )
 
@@ -119,6 +123,38 @@ def _execute_date_search(params: DateSearchParams) -> dict[str, Any]:
         return {"success": False, "error": str(exc), "dates": []}
     except Exception as exc:
         return {"success": False, "error": f"Search failed: {exc}", "dates": []}
+
+
+def _execute_journey_search(params: JourneySearchParams) -> dict[str, Any]:
+    """Execute an exact-date journey matrix search and return ranked journeys."""
+    try:
+        queries, skipped_combinations = _build_journey_search_queries(params)
+        if not queries:
+            return journey_success_payload(
+                [],
+                queries,
+                params,
+                skipped_combinations,
+                CONFIG.max_results,
+                CONFIG.default_currency,
+            )
+        executed = _resolve_batch_executor()(queries, min(8, len(queries)))
+        if executed["failed"] and not any(item.get("flights") for item in executed["results"]):
+            return journey_failure_payload(executed["results"])
+        return journey_success_payload(
+            executed["results"],
+            queries,
+            params,
+            skipped_combinations,
+            CONFIG.max_results,
+            CONFIG.default_currency,
+        )
+    except ParseError as exc:
+        return {"success": False, "error": str(exc), "journeys": []}
+    except ValueError as exc:
+        return {"success": False, "error": str(exc), "journeys": []}
+    except Exception as exc:
+        return {"success": False, "error": f"Search failed: {exc}", "journeys": []}
 
 
 def _execute_flight_batch(

@@ -64,13 +64,64 @@ Add this configuration to your `claude_desktop_config.json`:
 
 Search for exact-date one-way, round-trip, and multi-city itineraries.
 
-Use `search_flights_batch` when you need to rank many exact-date combinations by total trip price
+Use `search_journey_matrix` when you need to rank many exact-date combinations by total trip price
 across a Cartesian product of airport/date choices. `search_dates` is better suited to flexible
 anchor-date scans where later segments are defined relative to the first segment's date.
 
-For complete-journey optimization across several airport/date options, build one exact-date
-multi-city query per combination, include `num_cabin_luggage` when cabin-bag fares matter, submit
-them through `search_flights_batch`, and rank the returned itineraries by total `price`.
+**Parameters:**
+
+### `search_journey_matrix`
+
+Find the cheapest exact-date complete journeys across airport/date option sets.
+
+Use this when each itinerary segment has one or many exact values for `origin`, `destination`,
+and `date`, and you want the server to materialize and rank the complete journey combinations.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `segments` | list | Yes | - | Ordered itinerary segments where `origin`, `destination`, and `date` each accept one or many exact options |
+| `cabin_class` | string | No | ECONOMY | ECONOMY, PREMIUM_ECONOMY, BUSINESS, or FIRST |
+| `max_stops` | string | No | ANY | ANY, NON_STOP, ONE_STOP, or TWO_PLUS_STOPS |
+| `departure_window` | string | No | null | Time window in 'HH-HH' format (e.g., '6-20') |
+| `arrival_time_window` | string | No | null | Arrival time window in 'HH-HH' format (e.g., '8-22') |
+| `airlines` | list | No | null | Filter by airline codes (e.g., ['BA', 'AA']) |
+| `sort_by` | string | No | CHEAPEST | Underlying exact-date search sort: CHEAPEST, DURATION, DEPARTURE_TIME, or ARRIVAL_TIME |
+| `passengers` | int | No | 1 | Number of adult passengers |
+| `num_cabin_luggage` | int | No | null | Cabin baggage count used when pricing fares |
+| `duration` | int | No | null | Maximum itinerary duration in minutes |
+| `max_layover_time` | int | No | null | Maximum layover duration in minutes within each searched segment |
+| `top_n` | int | No | 10 | Number of cheapest complete journeys to return |
+
+**Example Response:**
+
+```json
+{
+  "success": true,
+  "journeys": [
+    {
+      "price": 288.0,
+      "currency": "EUR",
+      "segment_prices": [99.0, 100.0, 89.0],
+      "trip_type": "MULTI_CITY",
+      "selected_segments": [
+        {"origin": "DUS", "destination": "FCO", "date": "2026-05-08"},
+        {"origin": "FCO", "destination": "TRS", "date": "2026-05-13"},
+        {"origin": "TRS", "destination": "BER", "date": "2026-05-18"}
+      ],
+      "stop_count": 1,
+      "travel_time_minutes": 380,
+      "legs": []
+    }
+  ],
+  "count": 1,
+  "combination_count": 72,
+  "evaluated_combinations": 72,
+  "combinations_with_results": 65,
+  "failed_combinations": 0,
+  "skipped_combinations": 0,
+  "top_n": 10
+}
+```
 
 **Parameters:**
 

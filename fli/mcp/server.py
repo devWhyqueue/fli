@@ -24,23 +24,28 @@ from .execution import (
     _execute_date_search,
     _execute_flight_batch,
     _execute_flight_search,
+    _execute_journey_search,
     _serialize_flight_leg,
     _serialize_flight_result,
 )
 from .params import (
     FlightSearchParams,
     FlightSearchSegmentParams,
+    JourneySearchParams,
+    JourneySearchSegmentParams,
     _build_date_search_queries,
     _build_flight_filters,
     _build_flight_segments_from_params,
+    _build_journey_search_queries,
     _determine_trip_type,
     _materialize_date_search_segments,
     _validate_segment_count,
 )
 from .tools import (
     _search_flights_from_params,
+    _search_journey_from_params,
     search_flights,
-    search_flights_batch,
+    search_journey_matrix,
 )
 
 __all__ = [
@@ -51,6 +56,8 @@ __all__ = [
     "FlightSearchConfig",
     "FlightSearchParams",
     "FlightSearchSegmentParams",
+    "JourneySearchParams",
+    "JourneySearchSegmentParams",
     "FliMCP",
     "PromptSpec",
     "SearchFlights",
@@ -58,13 +65,16 @@ __all__ = [
     "_build_date_search_queries",
     "_build_flight_filters",
     "_build_flight_segments_from_params",
+    "_build_journey_search_queries",
     "_determine_trip_type",
     "_effective_batch_parallelism",
     "_execute_date_search",
     "_execute_flight_batch",
     "_execute_flight_search",
+    "_execute_journey_search",
     "_materialize_date_search_segments",
     "_search_flights_from_params",
+    "_search_journey_from_params",
     "_serialize_flight_leg",
     "_serialize_flight_result",
     "_validate_segment_count",
@@ -74,7 +84,7 @@ __all__ = [
     "run_http",
     "search_dates",
     "search_flights",
-    "search_flights_batch",
+    "search_journey_matrix",
 ]
 
 

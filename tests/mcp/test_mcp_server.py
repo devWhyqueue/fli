@@ -10,12 +10,13 @@ import fli.mcp.server as server
 from fli.mcp.server import (
     DateSearchParams,
     FlightSearchParams,
+    JourneySearchParams,
     _effective_batch_parallelism,
     configuration_resource,
     mcp,
     search_dates,
     search_flights,
-    search_flights_batch,
+    search_journey_matrix,
 )
 from fli.models import Airline, Airport, FlightLeg, FlightResult
 
@@ -57,6 +58,7 @@ class FakeSearchFlights:
     """Deterministic search stub for MCP tests."""
 
     def __init__(self, request_params=None):
+        """Store request params for parity with the real client."""
         self.request_params = request_params
 
     def search(self, filters):
@@ -162,7 +164,7 @@ class TestMCPServer:
         assert len(result["flights"][0]["legs"]) == 3
 
     def test_search_flights_multicity_decomposes_into_one_way_legs(self, monkeypatch):
-        """Multi-city searches should decompose into one-way leg queries, not call Google multi-city."""
+        """Multi-city searches should decompose into one-way legs, not Google multi-city."""
         searched_trip_types: list[str] = []
 
         class TrackingFake(FakeSearchFlights):
@@ -423,119 +425,75 @@ class TestMCPServer:
         assert params.duration is None
         assert params.max_layover_time is None
 
-    def test_batch_search(self, monkeypatch):
-        """Test batch search interface and result shape."""
+    def test_search_journey_matrix(self, monkeypatch):
+        """Journey matrix search should rank flattened complete journeys."""
         monkeypatch.setattr(server, "SearchFlights", FakeSearchFlights)
         future_date = get_future_date(30)
-        result = search_flights_batch(
-            queries=[
-                FlightSearchParams(
-                    segments=[
-                        server.FlightSearchSegmentParams(
-                            origin="JFK",
-                            destination="LHR",
-                            date=future_date,
-                        )
-                    ],
-                    departure_time_window="6-20",
-                    arrival_time_window="8-22",
-                    num_cabin_luggage=1,
-                    duration=900,
+        result = search_journey_matrix(
+            segments=[
+                server.JourneySearchSegmentParams(
+                    origin=["JFK", "LGA"],
+                    destination="LAX",
+                    date=future_date,
                 ),
-                FlightSearchParams(
-                    segments=[
-                        server.FlightSearchSegmentParams(
-                            origin="JFK",
-                            destination="LAX",
-                            date=future_date,
-                        ),
-                        server.FlightSearchSegmentParams(
-                            origin="LAX",
-                            destination="SFO",
-                            date=get_future_date(33),
-                        ),
-                        server.FlightSearchSegmentParams(
-                            origin="SFO",
-                            destination="JFK",
-                            date=get_future_date(36),
-                        ),
-                    ]
+                server.JourneySearchSegmentParams(
+                    origin="LAX",
+                    destination="SFO",
+                    date=get_future_date(33),
                 ),
-                FlightSearchParams(
-                    segments=[
-                        server.FlightSearchSegmentParams(
-                            origin="INVALID",
-                            destination="LHR",
-                            date=future_date,
-                        )
-                    ]
+                server.JourneySearchSegmentParams(
+                    origin="SFO",
+                    destination="JFK",
+                    date=get_future_date(36),
                 ),
-            ]
-        )
-
-        assert result["results"][0]["index"] == 0
-        assert result["results"][1]["index"] == 1
-        assert result["results"][1]["trip_type"] == "MULTI_CITY"
-        assert result["results"][1]["count"] == 8
-        assert len(result["results"][1]["flights"][0]["legs"]) == 3
-        assert result["results"][1]["flights"][0]["segment_prices"] == [200.0, 150.0, 150.0]
-        assert result["results"][2]["index"] == 2
-        assert result["count"] == 3
-
-    def test_batch_search_accepts_typed_query_models(self, monkeypatch):
-        """Typed batch items should execute without reshaping the response."""
-        monkeypatch.setattr(server, "SearchFlights", FakeSearchFlights)
-        future_date = get_future_date(30)
-
-        result = search_flights_batch(
-            queries=[
-                FlightSearchParams(
-                    segments=[
-                        server.FlightSearchSegmentParams(
-                            origin="JFK",
-                            destination="LHR",
-                            date=future_date,
-                        )
-                    ],
-                    num_cabin_luggage=1,
-                ),
-                FlightSearchParams(
-                    segments=[
-                        server.FlightSearchSegmentParams(
-                            origin="JFK",
-                            destination="LAX",
-                            date=future_date,
-                        ),
-                        server.FlightSearchSegmentParams(
-                            origin="LAX",
-                            destination="SFO",
-                            date=get_future_date(33),
-                        ),
-                        server.FlightSearchSegmentParams(
-                            origin="SFO",
-                            destination="JFK",
-                            date=get_future_date(36),
-                        ),
-                    ]
-                ),
-            ]
+            ],
+            num_cabin_luggage=1,
+            top_n=3,
         )
 
         assert result["success"] is True
-        assert result["failed"] == 0
-        assert result["count"] == 2
-        assert result["results"][0]["index"] == 0
-        assert result["results"][1]["trip_type"] == "MULTI_CITY"
+        assert result["count"] == 3
+        assert result["combination_count"] == 2
+        assert result["evaluated_combinations"] == 2
+        assert result["failed_combinations"] == 0
+        assert result["journeys"][0]["price"] == 500.0
+        assert result["journeys"][0]["segment_prices"] == [200.0, 150.0, 150.0]
+        assert len(result["journeys"][0]["selected_segments"]) == 3
+        assert result["journeys"][0]["selected_segments"][0]["origin"] == "JFK"
 
-    def test_search_flights_batch_schema_exposes_nested_query_fields(self):
-        """Batch tool schema should expose FlightSearchParams, not untyped objects."""
+    def test_search_journey_matrix_schema_exposes_option_fields(self):
+        """Journey tool schema should expose typed per-segment option fields."""
         tools = asyncio.run(mcp.list_tools())
-        batch = next(tool for tool in tools if tool.name == "search_flights_batch")
+        assert "search_flights_batch" not in {tool.name for tool in tools}
+        journey = next(tool for tool in tools if tool.name == "search_journey_matrix")
 
-        serialized_schema = json.dumps(batch.inputSchema)
-        assert "FlightSearchParams" in serialized_schema
+        serialized_schema = json.dumps(journey.inputSchema)
+        assert "JourneySearchSegmentParams" in serialized_schema
         assert "Num Cabin Luggage" in serialized_schema
         assert '"additionalProperties": true' not in serialized_schema
+
+    def test_search_journey_matrix_accepts_typed_query_models(self, monkeypatch):
+        """Typed journey params should execute without reshaping the response."""
+        monkeypatch.setattr(server, "SearchFlights", FakeSearchFlights)
+        future_date = get_future_date(30)
+        params = JourneySearchParams(
+            segments=[
+                server.JourneySearchSegmentParams(
+                    origin="JFK",
+                    destination=["LAX", "SFO"],
+                    date=future_date,
+                )
+            ],
+            num_cabin_luggage=1,
+            top_n=2,
+        )
+
+        result = search_journey_matrix.fn(params)
+
+        assert result["success"] is True
+        assert result["failed_combinations"] == 0
+        assert result["count"] == 2
+        assert result["journeys"][0]["selected_segments"][0]["origin"] == "JFK"
 
     def test_effective_batch_parallelism_caps_round_trip_queries_only(self):
         """Only round-trip batches should have reduced parallelism."""
@@ -586,10 +544,10 @@ class TestMCPServer:
         assert _effective_batch_parallelism([(0, multi_city)], 8) == 8
         assert _effective_batch_parallelism([(0, round_trip)], 8) == 3
 
-    def test_batch_search_handles_100_multi_city_queries_under_parallel_execution(
+    def test_internal_batch_execution_handles_100_multi_city_queries_under_parallel_execution(
         self, monkeypatch
     ):
-        """Exact-date multi-city batches should retain requested parallelism."""
+        """Internal exact-date multi-city batching should retain requested parallelism."""
 
         def fake_execute_flight_search(params):
             time.sleep(0.02)
@@ -626,7 +584,7 @@ class TestMCPServer:
         ]
 
         start = time.perf_counter()
-        result = search_flights_batch(queries=queries, parallelism=8)
+        result = execution._execute_flight_batch(list(enumerate(queries)), parallelism=8)
         elapsed = time.perf_counter() - start
 
         assert result["success"] is True
@@ -638,8 +596,8 @@ class TestMCPServer:
         assert elapsed < 60
         assert elapsed < 1.5
 
-    def test_batch_search_handles_rome_style_journey_matrix(self, monkeypatch):
-        """Rome-style itinerary matrices should stay in one fast, strongly typed batch."""
+    def test_search_journey_matrix_handles_rome_style_itinerary_matrix(self, monkeypatch):
+        """Rome-style itinerary matrices should execute without manual query expansion."""
         captured_params: list[FlightSearchParams] = []
 
         def fake_execute_flight_search(params):
@@ -669,47 +627,42 @@ class TestMCPServer:
             }
 
         monkeypatch.setattr(execution, "_execute_flight_search", fake_execute_flight_search)
-        queries = [
-            FlightSearchParams(
-                segments=[
-                    server.FlightSearchSegmentParams(
-                        origin=origin,
-                        destination="FCO",
-                        date=outbound_date,
-                    ),
-                    server.FlightSearchSegmentParams(
-                        origin="FCO",
-                        destination=italy_destination,
-                        date=onward_date,
-                    ),
-                    server.FlightSearchSegmentParams(
-                        origin=italy_destination,
-                        destination="BER",
-                        date="2026-05-18",
-                    ),
-                ],
-                max_stops="ANY",
-                sort_by="CHEAPEST",
-                num_cabin_luggage=1,
-            )
-            for origin in ("DUS", "BER", "HAM", "CGN")
-            for outbound_date in ("2026-05-08", "2026-05-09", "2026-05-10")
-            for italy_destination in ("TRS", "VCE", "TSF")
-            for onward_date in ("2026-05-12", "2026-05-13")
-        ]
+        result = search_journey_matrix(
+            segments=[
+                server.JourneySearchSegmentParams(
+                    origin=["DUS", "BER", "HAM", "CGN"],
+                    destination="FCO",
+                    date=["2026-05-08", "2026-05-09", "2026-05-10"],
+                ),
+                server.JourneySearchSegmentParams(
+                    origin="FCO",
+                    destination=["TRS", "VCE", "TSF"],
+                    date=["2026-05-12", "2026-05-13"],
+                ),
+                server.JourneySearchSegmentParams(
+                    origin=["TRS", "VCE", "TSF"],
+                    destination="BER",
+                    date="2026-05-18",
+                ),
+            ],
+            max_stops="ANY",
+            sort_by="CHEAPEST",
+            num_cabin_luggage=1,
+            top_n=5,
+        )
 
-        result = search_flights_batch(queries=queries, parallelism=8)
-
-        assert len(queries) == 72
         assert result["success"] is True
-        assert result["failed"] == 0
-        assert result["count"] == 72
-        assert result["parallelism"] == 8
+        assert result["combination_count"] == 72
+        assert result["evaluated_combinations"] == 72
+        assert result["failed_combinations"] == 0
         assert len(captured_params) == 72
         assert all(params.num_cabin_luggage == 1 for params in captured_params)
-        assert all(server._determine_trip_type(params.segments) == server.TripType.MULTI_CITY for params in captured_params)
-        assert result["results"][0]["index"] == 0
-        assert result["results"][-1]["index"] == 71
+        assert all(
+            server._determine_trip_type(params.segments) == server.TripType.MULTI_CITY
+            for params in captured_params
+        )
+        assert result["count"] == 5
+        assert result["journeys"][0]["selected_segments"][0]["destination"] == "FCO"
 
     def test_date_search_params_validation(self):
         """Test DateSearchParams validation."""

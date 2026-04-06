@@ -9,8 +9,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 from fli.core.fastmcp_shim import Tool as ShimTool
-from fli.mcp.server import search_flights_batch
-from fli.mcp.server import FliMCP, _serialize_flight_result
+from fli.mcp.server import FliMCP, _serialize_flight_result, search_journey_matrix
 
 # ---------------------------------------------------------------------------
 # Bug 1: list_tools — FastMCP 2.x compatibility
@@ -55,10 +54,10 @@ class TestListTools:
 
     def test_fastmcp_shim_generates_tool_parameters(self):
         """The shim should expose a JSON schema instead of an empty input schema."""
-        tool = ShimTool.from_function(search_flights_batch)
+        tool = ShimTool.from_function(search_journey_matrix)
 
-        assert tool.parameters["properties"]["queries"]["items"]["$ref"].endswith(
-            "/FlightSearchParams"
+        assert tool.parameters["properties"]["segments"]["items"]["$ref"].endswith(
+            "/JourneySearchSegmentParams"
         )
 
 
