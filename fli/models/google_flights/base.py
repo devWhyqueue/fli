@@ -143,6 +143,7 @@ class FlightResult(BaseModel):
     stops: NonNegativeInt
     segment_prices: list[NonNegativeFloat] | None = None
     selection_token: str | None = None
+    cabin_bag_included: bool | None = None
 
 
 class FlightSegment(BaseModel):

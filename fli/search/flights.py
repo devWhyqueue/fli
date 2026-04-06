@@ -21,6 +21,25 @@ from fli.search.internal.flight_parsing import (
 )
 
 
+def _filter_by_cabin_bag(
+    flights: list[FlightResult],
+    num_cabin_luggage: int | None,
+) -> list[FlightResult]:
+    """Drop flights whose fare excludes cabin bags when luggage was requested.
+
+    Google Flights' shopping API ignores the cabin-luggage parameter and
+    always returns base fares.  The response *does* flag whether each fare
+    includes a cabin bag (``cabin_bag_included``).  When the caller asked
+    for >=1 cabin bag we keep only fares that already cover it, so the
+    returned prices are accurate.  If that would eliminate every result we
+    fall back to the unfiltered list to avoid empty responses.
+    """
+    if not num_cabin_luggage or num_cabin_luggage < 1:
+        return flights
+    with_bag = [f for f in flights if f.cabin_bag_included is not False]
+    return with_bag if with_bag else flights
+
+
 class _ClientProxy:
     """Delegate request calls to the current thread's shared HTTP client."""
 
@@ -110,7 +129,8 @@ class SearchFlights:
             if isinstance(encoded_filters[i], list)
             for item in encoded_filters[i][0]
         ]
-        return [self._parse_flights_data(flight) for flight in flights_data]
+        results = [self._parse_flights_data(flight) for flight in flights_data]
+        return _filter_by_cabin_bag(results, filters.passenger_info.num_cabin_luggage)
 
     @staticmethod
     def _parse_flights_data(data: list) -> FlightResult:

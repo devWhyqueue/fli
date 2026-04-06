@@ -70,6 +70,8 @@ def _serialize_flight_result(flight: Any, is_round_trip: bool = False) -> dict[s
     }
     if getattr(flight, "segment_prices", None) is not None:
         payload["segment_prices"] = flight.segment_prices
+    if getattr(flight, "cabin_bag_included", None) is not None:
+        payload["cabin_bag_included"] = flight.cabin_bag_included
     return payload
 
 

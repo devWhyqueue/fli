@@ -12,6 +12,7 @@ def parse_flights_data(data: list) -> FlightResult:
     """Parse raw flight data into a structured FlightResult."""
     return FlightResult(
         price=parse_price(data),
+        cabin_bag_included=_parse_cabin_bag_included(data),
         duration=data[0][9],
         stops=len(data[0][2]) - 1,
         selection_token=parse_selection_token(data),
@@ -38,6 +39,19 @@ def parse_price(data: list) -> float:
     except (IndexError, TypeError):
         pass
     return 0.0
+
+
+def _parse_cabin_bag_included(data: list) -> bool | None:
+    """Return whether the fare includes a cabin bag (carry-on).
+
+    Google Flights encodes this at ``data[4][6][1]``: 1 means the fare
+    already covers a cabin bag, 0 means it does not (common for LCC basic
+    fares like Ryanair Value).  Returns *None* when the field is absent.
+    """
+    try:
+        return bool(data[4][6][1])
+    except (IndexError, TypeError):
+        return None
 
 
 def parse_datetime(date_arr: list[int], time_arr: list[int]) -> datetime:
