@@ -193,7 +193,9 @@ The MCP server can be configured via environment variables:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `FLI_MCP_DEFAULT_PASSENGERS` | Default number of adult passengers | 1 |
-| `FLI_MCP_DEFAULT_CURRENCY` | Currency code for results | EUR |
+| `FLI_MCP_DEFAULT_CURRENCY` | Currency code attached to serialized results | EUR |
+| `FLI_MCP_DEFAULT_MARKET` | Google Flights market query param (`gl`) used for pricing/results | de |
+| `FLI_MCP_DEFAULT_LANGUAGE` | Optional Google Flights language query param (`hl`) | null |
 | `FLI_MCP_DEFAULT_CABIN_CLASS` | Default cabin class | ECONOMY |
 | `FLI_MCP_DEFAULT_SORT_BY` | Default sorting strategy | CHEAPEST |
 | `FLI_MCP_DEFAULT_DEPARTURE_WINDOW` | Default departure window (HH-HH) | null |

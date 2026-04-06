@@ -8,7 +8,13 @@ from fli.core.parsers import ParseError
 from fli.models import NativeMultiCityResult, TripType
 from fli.search import SearchFlights as DefaultSearchFlights
 
-from .app import CONFIG
+from .app import CONFIG, google_request_params
+from .internal.execution_payloads import (
+    date_failure_payload,
+    date_success_payload,
+    flight_error_payload,
+    success_payload,
+)
 from .params import (
     DateSearchParams,
     FlightSearchParams,
@@ -74,11 +80,11 @@ def _execute_flight_search(params: FlightSearchParams) -> dict[str, Any]:
     try:
         filters, trip_type = _build_flight_filters(params)
         flights = _collect_flights(_search_flights_client(), filters, trip_type)
-        return _success_payload(flights, trip_type.name)
+        return success_payload(flights, trip_type.name, CONFIG.max_results)
     except ParseError as exc:
         return {"success": False, "error": str(exc), "flights": []}
     except Exception as exc:
-        return _flight_error_payload(exc)
+        return flight_error_payload(exc)
 
 
 def _collect_flights(search_client: Any, filters: Any, trip_type: TripType) -> list[dict[str, Any]]:
@@ -93,27 +99,6 @@ def _collect_flights(search_client: Any, filters: Any, trip_type: TripType) -> l
     return [_serialize_flight_result(flight, is_round_trip) for flight in raw_flights]
 
 
-def _success_payload(flights: list[dict[str, Any]], trip_type_name: str) -> dict[str, Any]:
-    """Build a successful flight-search response payload."""
-    limited_flights = flights[: CONFIG.max_results] if CONFIG.max_results else flights
-    return {
-        "success": True,
-        "flights": limited_flights,
-        "count": len(limited_flights),
-        "trip_type": trip_type_name,
-    }
-
-
-def _flight_error_payload(exc: Exception) -> dict[str, Any]:
-    """Build a normalized flight-search error payload."""
-    error_msg = str(exc)
-    if "validation error" in error_msg.lower():
-        error_msg = "Invalid parameter value"
-    else:
-        error_msg = f"Search failed: {error_msg}"
-    return {"success": False, "error": error_msg, "flights": []}
-
-
 def _execute_date_search(params: DateSearchParams) -> dict[str, Any]:
     """Execute a date search and return formatted results."""
     try:
@@ -121,76 +106,21 @@ def _execute_date_search(params: DateSearchParams) -> dict[str, Any]:
         trip_type = _determine_trip_type(params.segments)
         executed = _resolve_batch_executor()(queries, min(8, len(queries)))
         if executed["failed"]:
-            return _date_failure_payload(executed["results"])
-        return _date_success_payload(executed["results"], queries, params, trip_type)
+            return date_failure_payload(executed["results"])
+        return date_success_payload(
+            executed["results"],
+            queries,
+            params,
+            trip_type,
+            CONFIG.max_results,
+            CONFIG.default_currency,
+        )
     except ParseError as exc:
         return {"success": False, "error": str(exc), "dates": []}
     except ValueError as exc:
         return {"success": False, "error": str(exc), "dates": []}
     except Exception as exc:
         return {"success": False, "error": f"Search failed: {exc}", "dates": []}
-
-
-def _date_failure_payload(results: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build a normalized date-search failure payload."""
-    error_result = next((item for item in results if not item.get("success", False)), None)
-    error = (
-        error_result.get("error", "Date search failed") if error_result else "Date search failed"
-    )
-    return {"success": False, "error": error, "dates": []}
-
-
-def _date_success_payload(
-    results: list[dict[str, Any]],
-    queries: list[tuple[int, FlightSearchParams]],
-    params: DateSearchParams,
-    trip_type: TripType,
-) -> dict[str, Any]:
-    """Build a successful date-search response payload."""
-    date_results = [_build_date_result(result, queries, trip_type) for result in results]
-    date_results = [result for result in date_results if result is not None]
-    if not date_results:
-        return _empty_date_payload(params, trip_type.name)
-    if params.sort_by_price:
-        date_results.sort(key=lambda item: item["price"])
-    limited_results = date_results[: CONFIG.max_results] if CONFIG.max_results else date_results
-    return {
-        "success": True,
-        "dates": limited_results,
-        "count": len(limited_results),
-        "trip_type": trip_type.name,
-        "date_range": f"{params.start_date} to {params.end_date}",
-    }
-
-
-def _build_date_result(
-    result: dict[str, Any],
-    queries: list[tuple[int, FlightSearchParams]],
-    trip_type: TripType,
-) -> dict[str, Any] | None:
-    """Build one summarized date-search result row."""
-    flights = result["flights"]
-    if not flights:
-        return None
-    segment_dates = [segment.date for segment in queries[result["index"]][1].segments]
-    return {
-        "date": segment_dates[0],
-        "segment_dates": segment_dates,
-        "price": min(flight["price"] for flight in flights),
-        "currency": CONFIG.default_currency,
-        "return_date": segment_dates[1] if trip_type == TripType.ROUND_TRIP else None,
-    }
-
-
-def _empty_date_payload(params: DateSearchParams, trip_type_name: str) -> dict[str, Any]:
-    """Build the empty-success date-search payload."""
-    return {
-        "success": True,
-        "dates": [],
-        "count": 0,
-        "trip_type": trip_type_name,
-        "date_range": f"{params.start_date} to {params.end_date}",
-    }
 
 
 def _execute_flight_batch(
@@ -237,8 +167,8 @@ def _search_flights_client() -> Any:
     """Instantiate the current SearchFlights class from the public facade."""
     server_module = sys.modules.get("fli.mcp.server")
     if server_module is None:
-        return DefaultSearchFlights()
-    return server_module.SearchFlights()
+        return DefaultSearchFlights(request_params=google_request_params())
+    return server_module.SearchFlights(request_params=google_request_params())
 
 
 def _resolve_batch_executor() -> Any:

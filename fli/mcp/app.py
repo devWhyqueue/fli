@@ -18,6 +18,8 @@ from mcp.types import (
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .internal.configuration_payload import build_configuration_payload
+
 try:
     FastMCP = importlib.import_module("fastmcp").FastMCP
     FastMCPTool = importlib.import_module("fastmcp.tools").Tool
@@ -44,6 +46,17 @@ class FlightSearchConfig(BaseSettings):
         max_length=3,
         description="Three-letter currency code returned with search results.",
     )
+    default_market: str = Field(
+        "de",
+        min_length=2,
+        max_length=2,
+        description="Google Flights market (`gl`) used when fetching results.",
+    )
+    default_language: str | None = Field(
+        None,
+        min_length=2,
+        description="Optional Google Flights language (`hl`) used when fetching results.",
+    )
     default_cabin_class: str = Field(
         "ECONOMY",
         description="Default cabin class used when none is provided.",
@@ -65,6 +78,16 @@ class FlightSearchConfig(BaseSettings):
 
 CONFIG = FlightSearchConfig()  # pyright: ignore[reportCallIssue]
 CONFIG_SCHEMA = CONFIG.model_json_schema()
+
+
+def google_request_params() -> dict[str, str]:
+    """Build Google Flights query params from MCP configuration."""
+    params: dict[str, str] = {}
+    if CONFIG.default_market:
+        params["gl"] = CONFIG.default_market.lower()
+    if CONFIG.default_language:
+        params["hl"] = CONFIG.default_language
+    return params
 
 
 @dataclass
@@ -197,19 +220,5 @@ mcp = FliMCP("Flight Search MCP Server")
 )
 def configuration_resource() -> str:
     """Expose configuration defaults and schema as a resource."""
-    payload = {
-        "defaults": CONFIG.model_dump(),
-        "schema": CONFIG_SCHEMA,
-        "environment": {
-            "prefix": "FLI_MCP_",
-            "variables": {
-                "FLI_MCP_DEFAULT_PASSENGERS": "Adjust the default passenger count.",
-                "FLI_MCP_DEFAULT_CURRENCY": "Override the currency code returned with results.",
-                "FLI_MCP_DEFAULT_CABIN_CLASS": "Set a default cabin class.",
-                "FLI_MCP_DEFAULT_SORT_BY": "Set the default result sorting strategy.",
-                "FLI_MCP_DEFAULT_DEPARTURE_WINDOW": "Provide a default departure window (HH-HH).",
-                "FLI_MCP_MAX_RESULTS": "Limit the maximum number of results returned by tools.",
-            },
-        },
-    }
+    payload = build_configuration_payload(CONFIG.model_dump(), CONFIG_SCHEMA)
     return json.dumps(payload, indent=2)

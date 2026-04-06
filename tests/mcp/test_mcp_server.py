@@ -45,6 +45,9 @@ def make_flight(departure_airport: Airport, arrival_airport: Airport, price: flo
 class FakeSearchFlights:
     """Deterministic search stub for MCP tests."""
 
+    def __init__(self, request_params=None):
+        self.request_params = request_params
+
     def search(self, filters):
         if filters.trip_type == server.TripType.ROUND_TRIP:
             return [

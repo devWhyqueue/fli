@@ -12,13 +12,19 @@ from typing import cast
 from fli.models import (
     Airline,
     Airport,
-    FlightLeg,
     FlightResult,
     FlightSearchFilters,
     NativeMultiCityResult,
 )
 from fli.models.google_flights.base import TripType
 from fli.search.client import get_client
+from fli.search.internal.flight_parsing import (
+    parse_airline,
+    parse_airport,
+    parse_datetime,
+    parse_flights_data,
+    parse_price,
+)
 from fli.search.native_multi_city import build_multi_city_result, select_cheapest_option
 from fli.search.selection import parse_selection_token
 
@@ -35,9 +41,10 @@ class SearchFlights:
         "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
     }
 
-    def __init__(self):
+    def __init__(self, *, request_params: dict[str, str] | None = None):
         """Initialize the search client for flight searches."""
         self.client = get_client()
+        self.request_params = request_params or {}
 
     def search(
         self, filters: FlightSearchFilters, top_n: int = 5
@@ -114,6 +121,7 @@ class SearchFlights:
         response = self.client.post(
             url=self.BASE_URL,
             data=f"f.req={encoded_filters}",
+            params=self.request_params or None,
             impersonate="chrome",
             allow_redirects=True,
         )
@@ -143,25 +151,7 @@ class SearchFlights:
             Structured FlightResult object with all flight details
 
         """
-        flight = FlightResult(
-            price=SearchFlights._parse_price(data),
-            duration=data[0][9],
-            stops=len(data[0][2]) - 1,
-            selection_token=parse_selection_token(data),
-            legs=[
-                FlightLeg(
-                    airline=SearchFlights._parse_airline(fl[22][0]),
-                    flight_number=fl[22][1],
-                    departure_airport=SearchFlights._parse_airport(fl[3]),
-                    arrival_airport=SearchFlights._parse_airport(fl[6]),
-                    departure_datetime=SearchFlights._parse_datetime(fl[20], fl[8]),
-                    arrival_datetime=SearchFlights._parse_datetime(fl[21], fl[10]),
-                    duration=fl[11],
-                )
-                for fl in data[0][2]
-            ],
-        )
-        return flight
+        return parse_flights_data(data)
 
     @staticmethod
     def _parse_price(data: list) -> float:
@@ -174,12 +164,7 @@ class SearchFlights:
             Flight price, or 0.0 if price data is unavailable
 
         """
-        try:
-            if data[1] and data[1][0]:
-                return data[1][0][-1]
-        except (IndexError, TypeError):
-            pass
-        return 0.0
+        return parse_price(data)
 
     @staticmethod
     def _parse_selection_token(data: list) -> str | None:
@@ -201,14 +186,7 @@ class SearchFlights:
             ValueError: If arrays contain only None values
 
         """
-        if not any(x is not None for x in date_arr) or not any(x is not None for x in time_arr):
-            raise ValueError("Date and time arrays must contain at least one non-None value")
-        year = date_arr[0] or 0
-        month = date_arr[1] or 0
-        day = date_arr[2] or 0
-        hour = time_arr[0] or 0
-        minute = time_arr[1] if len(time_arr) > 1 and time_arr[1] is not None else 0
-        return datetime(year, month, day, hour, minute)
+        return parse_datetime(date_arr, time_arr)
 
     @staticmethod
     def _parse_airline(airline_code: str) -> Airline:
@@ -221,9 +199,7 @@ class SearchFlights:
             Corresponding Airline enum value
 
         """
-        if airline_code[0].isdigit():
-            airline_code = f"_{airline_code}"
-        return getattr(Airline, airline_code)
+        return parse_airline(airline_code)
 
     @staticmethod
     def _parse_airport(airport_code: str) -> Airport:
@@ -236,4 +212,7 @@ class SearchFlights:
             Corresponding Airport enum value
 
         """
-        return getattr(Airport, airport_code)
+        return parse_airport(airport_code)
+
+
+_VULTURE_REFERENCES = (SearchFlights._parse_selection_token,)
